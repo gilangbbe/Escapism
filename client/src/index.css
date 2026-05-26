@@ -1,0 +1,9 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+body {
+  background: radial-gradient(circle at top, #1f1a14 0%, #0b0908 90%);
+  color: #f4ead2;
+  font-family: "IM Fell English", Georgia, serif;
+}

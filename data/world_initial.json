@@ -1,0 +1,35 @@
+{
+  "tick": 0,
+  "in_game_time": "04:30",
+  "minutes_until_port_royal": 90,
+  "current_location": "brig",
+  "alarm_meter": 0,
+  "alarm_max": 10,
+  "inventory": ["ledger_fragment", "folding_knife"],
+  "known_facts": [],
+  "discovered_items": ["ledger_fragment", "folding_knife", "lantern", "bunk", "ceiling_hook", "hal_mug", "hal_keyring"],
+  "hidden_items": ["bent_nail", "rope_coil", "herb_packet", "recipe_book", "glass_vial", "compass_back"],
+  "npc_state": {
+    "hal": "asleep_drunk",
+    "crew_unconscious": "drugged_unconscious"
+  },
+  "object_state": {
+    "cell_door": "locked",
+    "lantern": "lit",
+    "hal_mug": "rum_only",
+    "ceiling_hook": "available",
+    "vial": "empty_unheated",
+    "herbs": "raw_unbrewed",
+    "rope_coil": "coiled"
+  },
+  "objectives": {
+    "escape_brig": "active",
+    "lower_decks": "locked",
+    "neutralise_loyalists": "locked",
+    "recover_ledger": "locked",
+    "change_course": "locked"
+  },
+  "act": 1,
+  "scene_id": "brig:cold_open",
+  "history_summary": ""
+}

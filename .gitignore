@@ -1,0 +1,46 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg
+*.egg-info/
+dist/
+build/
+.eggs/
+.venv/
+venv/
+env/
+.env
+
+# Environment variables
+.env.local
+.env.*.local
+
+# Node / client
+client/node_modules/
+client/dist/
+client/.vite/
+
+# Data & runs
+data/runs/
+data/chroma/
+
+# ChromaDB
+*.sqlite3
+
+# Logs
+*.log
+logs/
+
+# macOS
+.DS_Store
+
+# IDE
+.vscode/
+.idea/
+
+# Type checking
+.mypy_cache/
+.pyright/
