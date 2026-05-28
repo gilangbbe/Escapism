@@ -8,6 +8,7 @@ export type EventKind =
   | "gm_narration"
   | "gm_state_delta"
   | "system_hint"
+  | "reflection"
   | "game_over";
 
 export interface GameEvent {

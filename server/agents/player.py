@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from ..llm import LLMClient, Message
-from ..memory import ClueStore
+from ..memory import ClueStore, EpisodicMemory
 from .protocol import PLAYER_ACTION_SCHEMA, PlayerAction, parse_player_response
 
 
@@ -35,6 +35,13 @@ SYSTEM_RULES = (
     "USE (target: item, args: {on: target}), WAIT (args: {minutes}), MOVE_TO (args: {location}), SAY.\n"
     "- If you do not yet have an item you need, examine or search for it first.\n"
     "- Do not invent items the world has not shown you.\n"
+    "\n## BDI (Belief / Desire / Intention) discipline\n"
+    "- ALWAYS fill `intent` with the single immediate goal you are pursuing this very turn "
+    "  (e.g. 'sedate Hal so the cell can be unlocked safely').\n"
+    "- ALWAYS fill `plan` with 1-3 short, ordered next steps that would complete the current intent. "
+    "  The first item of `plan` should describe the action you are about to take.\n"
+    "- If the GM blocked your last action or revealed information that changes the plan, REVISE the "
+    "  intent or plan accordingly. Never keep the same `intent` for more than 4 turns.\n"
     "\n## Anti-loop rules (CRITICAL)\n"
     "- NEVER repeat the same (verb, target) you used in your last 3 actions. Look at the 'Recent actions' "
     "  list below: if your last action was EXAMINE hal_keyring, do NOT EXAMINE hal_keyring again.\n"
@@ -52,6 +59,7 @@ SYSTEM_RULES = (
 class PlayerAgent:
     llm: LLMClient
     clues: ClueStore
+    episodic: EpisodicMemory | None = None
 
     def decide(self, world: dict[str, Any], history: list[dict[str, Any]]) -> PlayerAction:
         prompt = self._build_user_prompt(world, history)
@@ -74,15 +82,49 @@ class PlayerAgent:
         recent_actions = [ev for ev in history if ev.get("kind") == "player_action"][-5:]
         recent_hints = [ev for ev in history if ev.get("kind") == "system_hint"][-2:]
 
+        # BDI snapshot.
+        active_objs = [oid for oid, s in (world.get("objectives") or {}).items() if s == "active"]
+        beliefs = (world.get("known_facts") or [])[-8:]
+        bdi = world.get("player_bdi") or {}
+        current_intent = bdi.get("current_intent") or ""
+        current_plan = bdi.get("current_plan") or []
+        intent_age = int(bdi.get("intent_age") or 0)
+
+        # Episodic recall (only if an episodic store is wired in).
+        episodic_recall: list[str] = []
+        if self.episodic is not None:
+            query = " ".join([
+                world.get("current_location", ""),
+                current_intent,
+                " ".join(active_objs),
+            ])
+            for ep in self.episodic.query(query, k=4, current_tick=int(world.get("tick", 0))):
+                episodic_recall.append(f"[t{ep.tick} {ep.kind}] {ep.text[:200]}")
+
+        belief_lines = [f"  * {b}" for b in beliefs] or ["  * (none yet)"]
         sections = [
             "## World snapshot",
             "```json",
             json.dumps(_world_view(world), indent=2),
             "```",
+            "",
+            "## BDI — your current Desires / Beliefs / Intentions",
+            f"- Desires (active objectives): {', '.join(active_objs) or '(none)'}",
+            "- Beliefs (recent known facts):",
+            *belief_lines,
+            f"- Current intent: {current_intent or '(none yet — set one this turn)'}"
+            + (f" [age={intent_age} turns]" if current_intent else ""),
+            f"- Current plan: {current_plan or '(none yet — propose one this turn)'}",
+            "",
             "## Relevant clues (from your memory of the ship)",
         ]
         for doc in retrieved:
             sections.append(f"- **{doc.get('title') or doc['id']}** — {doc.get('text', '')}")
+
+        if episodic_recall:
+            sections.append("\n## From your memory of THIS voyage (episodic)")
+            for line in episodic_recall:
+                sections.append(f"- {line}")
 
         sections.append("\n## Recent actions YOU have already taken (DO NOT REPEAT)")
         if recent_actions:
@@ -107,8 +149,9 @@ class PlayerAgent:
 
         sections.append("\n## Your next action")
         sections.append(
-            "Pick a NEW action that advances an active objective. If the last GM narration revealed "
-            "something (an item within reach, a sound, a fact), ACT on it now — do not re-examine. "
+            "Pick a NEW action that advances an active objective. Always fill `intent` and `plan`. "
+            "If your `current intent` has aged past 4 turns without progress, REVISE it. "
+            "If the last GM narration revealed something, ACT on it now — do not re-examine. "
             "Respond with the JSON object only."
         )
         # Wrap final action request so the GM stub mock can also find it; harmless for real LLM.
@@ -151,6 +194,7 @@ def _world_view(world: dict[str, Any]) -> dict[str, Any]:
         "minutes_until_port_royal",
         "current_location",
         "alarm_meter",
+        "alarm_max",
         "inventory",
         "discovered_items",
         "known_facts",

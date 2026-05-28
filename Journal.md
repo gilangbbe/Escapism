@@ -88,3 +88,104 @@ first one whose payload contains a `verb` key.
 - Acts 2–5 are present in the clue corpus but not yet covered by the
   mock GM's response table. The real LLM should be able to drive them
   from the clues alone; verifying this is Phase 3 work.
+
+## 2026-05-26 — Auto fail-states + GM anti-stall
+
+First live Ollama run surfaced three issues:
+
+1. `alarm_meter` would climb to 10 but the simulation kept going — no
+   terminal check anywhere. Same with `minutes_until_port_royal` hitting 0.
+2. The GM raised the alarm in the delta but never narrated *why*, so the
+   chat looked disconnected from the HUD.
+3. With `llama3.2:3b` the Player Agent looped on `EXAMINE hal_keyring`.
+
+Fixes:
+
+- `WorldState.apply_delta` now auto-sets `game_over="alarm_max"` when
+  `alarm_meter >= alarm_max`, and `game_over="port_royal_reached"` when
+  the countdown reaches 0. It also writes a transient `auto_game_over`
+  flag the Simulation pops to inject a closing GM narration so the player
+  sees a proper ending paragraph in the chat.
+- GM system prompt grew a "Time and alarm (CRITICAL)" section and an
+  "Anti-stall (CRITICAL)" clause that requires the GM to either reveal a
+  new fact pointing at the next step or charge `alarm_delta` /
+  `time_advance_min` when the player keeps repeating itself.
+- GM prompt now also surfaces the last four player actions for stall
+  detection.
+- README recommends `qwen2.5:7b` for the Player and keeps `llama3.2` for
+  the GM. Smaller models can still recover thanks to the loop-detector
+  hint, but planning quality is markedly better with a 7B+ planner.
+
+## 2026-05-26 — Phase 3 hardening: tests, persistence, seed
+
+Four Phase 3 items shipped:
+
+- `tests/` (50 tests, all green via `pytest tests/ -q`):
+  - `test_protocol.py` covers `_extract_first_json` (fenced, multi-fence,
+    prose-wrapped, malformed, nested), `parse_player_response`
+    (defaults, uppercased verb, non-dict args, garbage input), and
+    `parse_gm_response` (defaults, non-dict delta, success false).
+  - `test_world.py` exercises every branch of `apply_delta` plus the new
+    auto fail-states and the clock helper (rollover, midnight wrap,
+    malformed input).
+  - `test_clue_store.py` validates the keyword fallback (ranking, scope,
+    empty/no-match), and gates the Chroma path on `chromadb` being
+    importable.
+  - `conftest.py` makes the repo root importable.
+- `ClueStore` now persists between runs. It writes
+  `data/chroma/<collection>.mtime` after indexing and on next boot
+  compares against the JSONL's current mtime; if it changed it drops the
+  collection and rebuilds, otherwise it reuses the persisted index.
+- `Settings.seed` reads `LLM_SEED`; when set, `OllamaClient.chat`
+  forwards it in `options.seed` for reproducible runs alongside the
+  existing `LLM_TEMPERATURE` knob.
+
+Remaining Phase 3 work (deferred):
+
+- Mock GM coverage for Acts 2–5.
+- Inbound WebSocket messages for player notes / GM hint requests.
+
+## 2026-05-27 — Phase 4: smarter cognition (episodic memory, reflection, BDI, Salty)
+
+Wired four cognitive upgrades into the Player + GM loop.
+
+- **Episodic memory.** New `EpisodicMemory` (server/memory/episodic.py) —
+  per-run, in-memory, keyword + recency retrieval. Distinct from
+  `ClueStore` (semantic, static, Chroma). Narrations, deltas, hints, and
+  reflections are appended every turn; the Player's prompt now includes a
+  *"From your memory of THIS voyage"* section pulled by
+  `episodic.query(world.location + intent + objectives)`.
+- **Reflection.** New `Reflector` (server/agents/reflection.py) — every
+  `REFLECT_EVERY` ticks (default 5), the GM's LLM is asked to compress
+  recent events into one paragraph + up to three new `known_facts`. The
+  facts are merged via `apply_delta({"known_facts_add": [...]})`; the
+  summary replaces the older raw episodes via `episodic.compact()`. New
+  event kind `reflection` surfaces in the UI as a centred scene-break
+  card.
+- **BDI overlay.** `PLAYER_ACTION_SCHEMA` gained `intent` (one-line
+  current goal) and `plan` (1–3 next steps). `PlayerAction` carries them;
+  the simulation persists them in `world.player_bdi` along with an
+  `intent_age` counter. The Player prompt now opens with a *Desires /
+  Beliefs / Intentions* block — Desires = active objectives, Beliefs =
+  recent `known_facts` + top episodic hits, Intentions = the previous
+  turn's persisted intent + plan. Rules tell Mira to revise her intent if
+  it hasn't progressed in 4 turns. The mock client synthesizes intent +
+  plan so the smoke test exercises the same plumbing.
+- **Salty tiered hints.** Replaced the binary loop hint with `Salty`
+  (server/agents/salty.py). Repeats of the same (verb, target) escalate
+  through three tiers controlled by `SALTY_TIER_STEP` (default 3):
+  Tier 1 = vague nudge + active objective; Tier 2 = `kind=hint, tier≤2`
+  doc from the corpus scoped to the current act; Tier 3 = `kind=hint
+  tier=3` or `kind=puzzle`. Hints are emitted as `system_hint` events
+  (now carry `tier`, `streak`, `verb`, `target`) and folded back into
+  episodic memory so the Player surfaces them on the next turn.
+
+Tests: added `tests/test_episodic.py` (bounded add / compact /
+keyword+recency / fallback), `tests/test_salty.py` (tier 1/2/3 selection
++ no-doc fallback), `tests/test_reflection.py` (parse / compact / cap /
+failure paths) plus three BDI cases in `tests/test_protocol.py`. Suite is
+67 / 67 green and the mock smoke still escapes the brig in 13 ticks
+with `player_bdi` persisted on the final snapshot.
+
+Knobs added: `REFLECT_EVERY` (env, default 5; 0 disables) and
+`SALTY_TIER_STEP` (env, default 3).

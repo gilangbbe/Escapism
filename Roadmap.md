@@ -31,21 +31,21 @@ Status legend: `[x]` done · `[~]` in progress · `[ ]` not started
 - [ ] Verify ChromaDB indexes the corpus and grounds the GM in practice (real LLM)
 - [ ] Capture a recorded run video / GIF for the README
 
-## Phase 3 — Hardening
+## Phase 3 — Hardening (current)
 
-- [ ] Unit tests: protocol parsers (tolerant JSON), delta application
-- [ ] Unit tests: ClueStore (Chroma path + fallback path)
-- [ ] Add `--seed` / fixed `temperature=0` for reproducible Ollama runs
-- [ ] Persist Chroma between runs; re-index on `game.jsonl` mtime change
+- [x] Unit tests: protocol parsers (tolerant JSON), delta application
+- [x] Unit tests: ClueStore (Chroma path + fallback path)
+- [x] Add `LLM_SEED` env var; existing `LLM_TEMPERATURE` already wired
+- [x] Persist Chroma between runs; re-index on `game.jsonl` mtime change
 - [ ] Mock GM coverage for Acts 2–5 happy paths
 - [ ] Inbound WebSocket messages (player notes, GM hint requests via Salty)
 
 ## Phase 4 — Smarter cognition
 
-- [ ] Reflection step: GM compresses recent events into new `known_facts`
-- [ ] Episodic / semantic memory split for the Player Agent (Chroma collection per agent)
-- [ ] BDI overlay (Belief / Desire / Intention) above the action loop
-- [ ] Salty parrot as an in-game tiered hint provider (Tier 1/2/3 from the design doc)
+- [x] Reflection step: GM compresses recent events into new `known_facts`
+- [x] Episodic / semantic memory split for the Player Agent (in-memory episodic store; Chroma stays semantic)
+- [x] BDI overlay (Belief / Desire / Intention) above the action loop
+- [x] Salty parrot as an in-game tiered hint provider (Tier 1/2/3 from the design doc)
 
 ## Phase 5 — Multi-agent + replayability
 

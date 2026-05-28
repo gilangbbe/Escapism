@@ -10,6 +10,8 @@ from typing import Any
 PLAYER_ACTION_SCHEMA = {
     "thought": "string (internal monologue, not spoken)",
     "say": "string (spoken aloud; empty string if silent)",
+    "intent": "string — the single immediate goal you are pursuing right now (e.g. 'sedate Hal')",
+    "plan": "list of 1-3 short next steps you intend to take, in order",
     "action": {
         "verb": "one of: EXAMINE, SEARCH, TAKE, COMBINE, USE, WAIT, MOVE_TO, SAY",
         "target": "string id of an item, npc, object, or location (optional)",
@@ -46,6 +48,8 @@ class PlayerAction:
     target: str
     args: dict[str, Any]
     raw: dict[str, Any]
+    intent: str = ""
+    plan: list[str] | None = None
 
     @property
     def is_silent(self) -> bool:
@@ -55,6 +59,8 @@ class PlayerAction:
 def parse_player_response(text: str) -> PlayerAction:
     payload = _extract_first_json(text) or {}
     action = payload.get("action") or {}
+    plan_raw = payload.get("plan")
+    plan = [str(s).strip() for s in plan_raw if isinstance(s, str) and s.strip()] if isinstance(plan_raw, list) else None
     return PlayerAction(
         thought=str(payload.get("thought") or "").strip(),
         say=str(payload.get("say") or "").strip(),
@@ -62,6 +68,8 @@ def parse_player_response(text: str) -> PlayerAction:
         target=str(action.get("target") or "").strip(),
         args=action.get("args") if isinstance(action.get("args"), dict) else {},
         raw=payload,
+        intent=str(payload.get("intent") or "").strip(),
+        plan=plan,
     )
 
 

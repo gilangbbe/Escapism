@@ -9,6 +9,8 @@ from pathlib import Path
 from typing import Any, Awaitable, Callable
 
 from .agents import GameMasterAgent, PlayerAgent
+from .agents.reflection import Reflector
+from .agents.salty import Salty
 from .config import settings, DATA_DIR, RUNS_DIR
 from .llm import (
     LLMClient,
@@ -16,7 +18,7 @@ from .llm import (
     MockPlayerClient,
     OllamaClient,
 )
-from .memory import ClueStore
+from .memory import ClueStore, EpisodicMemory
 from .world import RunStore, WorldState, make_event, now_ts
 
 
@@ -29,6 +31,9 @@ class Simulation:
     player: PlayerAgent
     gm: GameMasterAgent
     run: RunStore
+    episodic: EpisodicMemory
+    salty: Salty
+    reflector: Reflector | None = None
     broadcast: Broadcaster | None = None
     events: list[dict[str, Any]] = field(default_factory=list)
     finished: bool = False
@@ -39,15 +44,25 @@ class Simulation:
         world = WorldState.load(DATA_DIR / "world_initial.json")
         clues = ClueStore(DATA_DIR / "game.jsonl")
         player_llm, gm_llm = _build_llms()
-        player = PlayerAgent(llm=player_llm, clues=clues)
+        episodic = EpisodicMemory()
+        player = PlayerAgent(llm=player_llm, clues=clues, episodic=episodic)
         gm = GameMasterAgent(llm=gm_llm, clues=clues)
+        salty = Salty(clues=clues)
+        reflector = (
+            Reflector(llm=gm_llm, episodic=episodic)
+            if settings.reflect_every > 0 else None
+        )
 
         ts = now_ts().replace(":", "-")
         run = RunStore(
             log_path=RUNS_DIR / f"{ts}.events.jsonl",
             snapshot_path=RUNS_DIR / f"{ts}.world.json",
         )
-        return cls(world=world, player=player, gm=gm, run=run, broadcast=broadcast)
+        return cls(
+            world=world, player=player, gm=gm, run=run,
+            episodic=episodic, salty=salty, reflector=reflector,
+            broadcast=broadcast,
+        )
 
     # --------------------------------------------------------------- driver
     async def run_loop(self) -> None:
@@ -86,11 +101,15 @@ class Simulation:
         await self._emit(make_event(tick, "player_action", "mira", {
             "action": action.raw.get("action") or {
                 "verb": action.verb, "target": action.target, "args": action.args
-            }
+            },
+            "intent": action.intent,
+            "plan": action.plan or [],
         }))
 
-        # 1b. Loop detector: if the same (verb, target) has just been repeated 3x,
-        # inject a system hint that the player prompt will surface next turn.
+        # 1a. Persist BDI in the world.
+        self._update_bdi(action)
+
+        # 1b. Loop detector — escalates Salty tier hints when stuck.
         await self._maybe_emit_loop_hint(tick, action)
 
         # 2. GM adjudicates.
@@ -101,6 +120,8 @@ class Simulation:
             "text": narration,
             "success": gm_response.get("success", True),
         }))
+        # Episodic ingest: narration is a high-value episode.
+        self.episodic.add(tick, "narration", narration, score_hint=1.0)
 
         # 3. Apply delta.
         notes = self.world.apply_delta(delta)
@@ -110,10 +131,9 @@ class Simulation:
                 "notes": notes,
                 "world": self.world.snapshot(),
             }))
+            self.episodic.add(tick, "delta", " | ".join(notes), score_hint=0.6)
 
-        # 3b. If an automatic fail-state fired (alarm maxed / time expired) and
-        # the GM did not narrate it themselves, inject a closing narration so the
-        # player and the chat UI both see WHY the game ended.
+        # 3b. Auto fail-state narration.
         auto = self.world.data.pop("auto_game_over", None)
         if auto:
             text = _auto_fail_narration(auto, self.world.snapshot())
@@ -121,34 +141,88 @@ class Simulation:
                 "text": text, "success": False, "auto": auto,
             }))
 
+        # 4. Periodic reflection — compress episodic memory and add lasting facts.
+        if (
+            self.reflector is not None
+            and not self.world.game_over
+            and settings.reflect_every > 0
+            and tick > 0
+            and tick % settings.reflect_every == 0
+        ):
+            await self._reflect(tick)
+
     async def _maybe_emit_loop_hint(self, tick: int, action: Any) -> None:
         key = (action.verb or "").upper(), (action.target or "")
         recent = [
             ev for ev in self.events
             if ev.get("kind") == "player_action"
-        ][-3:]
-        if len(recent) < 3:
-            return
+        ][-6:]  # look back a bit further for tier escalation
         keys = []
         for ev in recent:
             a = ev.get("payload", {}).get("action", {}) or {}
             keys.append(((a.get("verb") or "").upper(), a.get("target") or ""))
-        if not all(k == key for k in keys):
+        # Count trailing repetitions of the current key.
+        streak = 0
+        for k in reversed(keys):
+            if k == key:
+                streak += 1
+            else:
+                break
+        step = max(1, settings.salty_tier_step)
+        if streak < step:
             return
-        # Don't spam: only one hint per stuck streak.
+        tier = min(3, 1 + (streak - step) // step + 1)
+        # Avoid emitting the same tier twice for the same streak.
         last_hint = next(
             (ev for ev in reversed(self.events) if ev.get("kind") == "system_hint"),
             None,
         )
-        if last_hint and tick - last_hint.get("tick", 0) < 3:
+        if last_hint and last_hint.get("payload", {}).get("tier") == tier \
+           and tick - last_hint.get("tick", 0) < step:
             return
-        verb, target = key
-        msg = (
-            f"You have repeated {verb} {target} three turns in a row with no visible change in the "
-            f"world. That approach is a dead end. Pick a DIFFERENT verb (TAKE, USE, COMBINE, MOVE_TO, "
-            f"WAIT) or a DIFFERENT target. Re-read your active objectives and inventory."
-        )
-        await self._emit(make_event(tick, "system_hint", "system", {"text": msg}))
+        text = self.salty.hint_for(tier=tier, world=self.world.snapshot(), action_key=key)
+        await self._emit(make_event(tick, "system_hint", "system", {
+            "text": text, "tier": tier, "streak": streak,
+            "verb": key[0], "target": key[1],
+        }))
+        # Also feed into episodic memory — hints are sticky.
+        self.episodic.add(tick, "hint", text, score_hint=1.5)
+
+    def _update_bdi(self, action: Any) -> None:
+        bdi = self.world.data.setdefault("player_bdi", {})
+        new_intent = (action.intent or "").strip()
+        prev_intent = bdi.get("current_intent") or ""
+        if new_intent and new_intent != prev_intent:
+            bdi["current_intent"] = new_intent
+            bdi["intent_age"] = 1
+        elif new_intent:
+            bdi["intent_age"] = int(bdi.get("intent_age") or 0) + 1
+        if action.plan:
+            bdi["current_plan"] = list(action.plan)
+
+    async def _reflect(self, tick: int) -> None:
+        try:
+            result = self.reflector.reflect(
+                tick=tick, world=self.world.snapshot(), recent_events=self.events
+            )
+        except Exception as exc:  # noqa: BLE001
+            print(f"[simulation] reflection failed: {exc}")
+            return
+        if not result:
+            return
+        # Merge any new facts into the world.
+        new_facts = result.get("new_facts") or []
+        if new_facts:
+            notes = self.world.apply_delta({"known_facts_add": new_facts})
+            await self._emit(make_event(tick, "gm_state_delta", "gm", {
+                "delta": {"known_facts_add": new_facts},
+                "notes": notes,
+                "world": self.world.snapshot(),
+            }))
+        await self._emit(make_event(tick, "reflection", "system", {
+            "summary": result.get("summary", ""),
+            "new_facts": new_facts,
+        }))
 
     # --------------------------------------------------------------- helpers
     async def _emit(self, event: dict[str, Any]) -> None:

@@ -41,12 +41,32 @@ class ClueStore:
         client = chromadb.PersistentClient(path=str(CHROMA_DIR))
         # Use chromadb's default embedder (ONNX MiniLM) so we don't depend on Ollama embeddings.
         collection = client.get_or_create_collection(settings.chroma_collection)
-        if collection.count() == 0:
+
+        # Re-index if the source JSONL has changed (mtime) or the collection is empty.
+        marker = CHROMA_DIR / f"{settings.chroma_collection}.mtime"
+        source_mtime = f"{self.jsonl_path.stat().st_mtime:.6f}"
+        prior_mtime = marker.read_text().strip() if marker.exists() else ""
+        stale = prior_mtime != source_mtime
+        empty = collection.count() == 0
+
+        if stale and not empty:
+            # Drop the stale collection and rebuild.
+            client.delete_collection(settings.chroma_collection)
+            collection = client.get_or_create_collection(settings.chroma_collection)
+            empty = True
+            print(f"[clue_store] source changed (mtime {prior_mtime!r} -> {source_mtime!r}); reindexing")
+
+        if empty:
             ids = [d["id"] for d in self.docs]
             metadatas = [{k: _stringify(v) for k, v in d.items() if k != "text"} for d in self.docs]
             documents = [self._compose_text(d) for d in self.docs]
             collection.add(ids=ids, documents=documents, metadatas=metadatas)
+            CHROMA_DIR.mkdir(parents=True, exist_ok=True)
+            marker.write_text(source_mtime)
             print(f"[clue_store] indexed {len(ids)} clue documents into Chroma")
+        else:
+            print(f"[clue_store] reusing persisted Chroma collection ({collection.count()} docs)")
+
         self._collection = collection
 
     @staticmethod

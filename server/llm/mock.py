@@ -262,9 +262,43 @@ class MockPlayerClient(LLMClient):
                 "action": {"verb": "WAIT", "args": {}},
             }
         else:
-            payload = _PLAYER_SCRIPT[self._cursor]
+            payload = dict(_PLAYER_SCRIPT[self._cursor])
             self._cursor += 1
+        # Synthesize a small BDI overlay so the simulation's BDI plumbing
+        # exercises on the mock path too.
+        payload.setdefault("intent", _intent_from_script(self._cursor - 1))
+        payload.setdefault("plan", _plan_from_script(self._cursor - 1))
         return json.dumps(payload)
+
+
+_INTENTS = [
+    "take stock of the brig",
+    "search the unconscious crew for tools",
+    "find a lockpick or improvised tool",
+    "free a usable nail from the bunk",
+    "focus the lantern flame to brew a draught",
+    "brew the sleeping draught in the vial",
+    "heat the vial in the focused flame",
+    "rig a rope through the ceiling hook above Hal's desk",
+    "deliver the draught into Hal's mug",
+    "wait for the draught to take Hal",
+    "grapple Hal's keyring off his belt",
+    "unlock the cell door silently",
+    "descend to the lower decks",
+]
+
+
+def _intent_from_script(idx: int) -> str:
+    if 0 <= idx < len(_INTENTS):
+        return _INTENTS[idx]
+    return "look for the next opportunity"
+
+
+def _plan_from_script(idx: int) -> list:
+    # First step = the action being taken now; followups are placeholders.
+    if 0 <= idx < len(_INTENTS):
+        return [_INTENTS[idx], "observe the result", "adjust plan based on what changes"]
+    return ["assess the situation", "act on what changed"]
 
 
 class MockGameMasterClient(LLMClient):

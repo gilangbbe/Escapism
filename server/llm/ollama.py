@@ -20,11 +20,14 @@ class OllamaClient(LLMClient):
         self.timeout = timeout
 
     def chat(self, messages: Iterable[Message], *, json_mode: bool = False) -> str:
+        options: dict = {"temperature": self.temperature}
+        if settings.seed is not None:
+            options["seed"] = settings.seed
         payload = {
             "model": self.model,
             "messages": [m.to_dict() for m in messages],
             "stream": False,
-            "options": {"temperature": self.temperature},
+            "options": options,
         }
         if json_mode:
             payload["format"] = "json"
