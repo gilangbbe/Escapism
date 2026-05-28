@@ -9,6 +9,11 @@ from pathlib import Path
 from typing import Any, Awaitable, Callable
 
 from .agents import GameMasterAgent, PlayerAgent
+from .agents.puzzle_validator import (
+    check_preconditions,
+    delta_grants_effect,
+    find_triggered_puzzle,
+)
 from .agents.reflection import Reflector
 from .agents.salty import Salty
 from .config import settings, DATA_DIR, RUNS_DIR
@@ -19,7 +24,7 @@ from .llm import (
     OllamaClient,
 )
 from .memory import ClueStore, EpisodicMemory
-from .world import RunStore, WorldState, make_event, now_ts
+from .world import RunStore, WorldState, delta_is_substantive, make_event, now_ts
 
 
 Broadcaster = Callable[[dict[str, Any]], Awaitable[None]]
@@ -33,6 +38,7 @@ class Simulation:
     run: RunStore
     episodic: EpisodicMemory
     salty: Salty
+    clues: ClueStore | None = None
     reflector: Reflector | None = None
     broadcast: Broadcaster | None = None
     events: list[dict[str, Any]] = field(default_factory=list)
@@ -60,7 +66,7 @@ class Simulation:
         )
         return cls(
             world=world, player=player, gm=gm, run=run,
-            episodic=episodic, salty=salty, reflector=reflector,
+            episodic=episodic, salty=salty, clues=clues, reflector=reflector,
             broadcast=broadcast,
         )
 
@@ -112,13 +118,108 @@ class Simulation:
         # 1b. Loop detector — escalates Salty tier hints when stuck.
         await self._maybe_emit_loop_hint(tick, action)
 
-        # 2. GM adjudicates.
+        # 1c. Idempotency guard: if this exact (verb, target, on) is already in
+        # the completed-actions ledger, short-circuit the GM call. The world is
+        # already in the desired state; re-running the GM risks duplicate
+        # narration / stale deltas (the "Mira brews herbs twice" bug).
+        prior = self.world.find_completed_action(
+            verb=action.verb, target=action.target, args=action.args
+        )
+        if prior is not None and action.verb in {"USE", "COMBINE", "TAKE", "MOVE_TO"}:
+            redirect = (
+                f"You already did that at tick {prior.get('tick','?')} "
+                f"({prior.get('summary','no summary')}). The world reflects it already. "
+                "Pick a different next step."
+            )
+            await self._emit(make_event(tick, "gm_narration", "gm", {
+                "text": redirect, "success": True, "idempotent": True,
+            }))
+            self.episodic.add(tick, "hint", redirect, score_hint=1.5)
+            # Skip GM, skip delta, skip reflection on this tick.
+            return
+
+        # 2. GM adjudicates. If the GM claims `success: true` but emits an
+        # empty/non-substantive delta, re-prompt ONCE with a correction note
+        # before falling back to forcing success=false.
         gm_response = self.gm.adjudicate(self.world.snapshot(), action, self.events)
-        narration = gm_response.get("narration") or "(The GM is silent.)"
         delta = gm_response.get("delta") or {}
+
+        # 2a. Puzzle-precondition validation. If the player's action triggers a
+        # puzzle and the GM granted any of its declared effects despite unmet
+        # preconditions, REJECT and reprompt with a hard correction. This is
+        # the corpus-grounded sanity check on top of the GM's prose.
+        triggered = None
+        if self.clues is not None:
+            scope = f"act{self.world.data.get('act', 1)}"
+            triggered = find_triggered_puzzle(
+                self.clues, verb=action.verb, target=action.target,
+                args=action.args, scope=scope,
+            )
+        if triggered is not None:
+            unmet = check_preconditions(triggered, self.world.snapshot())
+            if unmet and delta_grants_effect(delta, triggered):
+                pre_correction = (
+                    f"You granted effects of puzzle `{triggered.get('id')}` despite UNMET "
+                    f"preconditions: {'; '.join(unmet)}. Re-emit with `success: false`, "
+                    "a narration that honestly describes the failure, a small `time_advance_min` "
+                    "and optionally `alarm_delta`. Do NOT include any of the puzzle's effects in "
+                    "the delta."
+                )
+                retry = self.gm.adjudicate(
+                    self.world.snapshot(), action, self.events, correction=pre_correction,
+                )
+                retry_delta = retry.get("delta") or {}
+                if not delta_grants_effect(retry_delta, triggered) or check_preconditions(triggered, self.world.snapshot()) == []:
+                    gm_response = retry
+                    delta = retry_delta
+                else:
+                    # Force a clean failure response.
+                    gm_response = {
+                        "narration": (
+                            f"The attempt fails: {'; '.join(unmet)}. Time slips by as you "
+                            "fumble with what you do not yet have."
+                        ),
+                        "success": False,
+                        "delta": {"time_advance_min": 1, "alarm_delta": 1},
+                        "raw": gm_response.get("raw", {}),
+                    }
+                    delta = gm_response["delta"]
+
+        if gm_response.get("success", True) and not delta_is_substantive(delta):
+            correction = (
+                "Your previous response had `success: true` but `delta` was empty (or contained only "
+                "time/alarm changes). That violates the narration\u2194delta consistency rule. Either:\n"
+                "(a) Re-emit with a substantive delta encoding the change your narration described "
+                "(`inventory_add`, `object_state`, `npc_state`, `discovered_items`, `known_facts_add`, "
+                "`objectives`, `current_location`, etc.), OR\n"
+                "(b) Re-emit with `success: false` and a narration that honestly describes the failure, "
+                "plus a small `time_advance_min` and/or `alarm_delta` as cost."
+            )
+            retry = self.gm.adjudicate(
+                self.world.snapshot(), action, self.events, correction=correction,
+            )
+            retry_delta = retry.get("delta") or {}
+            if delta_is_substantive(retry_delta) or not retry.get("success", True):
+                gm_response = retry
+                delta = retry_delta
+            else:
+                # GM still won't comply \u2014 force success=false so the player at least
+                # sees no state change and can adapt.
+                gm_response = {
+                    **gm_response,
+                    "success": False,
+                    "narration": (
+                        (gm_response.get("narration") or "").rstrip() +
+                        " (Nothing actually changed; the attempt was hollow.)"
+                    ).strip(),
+                }
+                delta = {"time_advance_min": int(delta.get("time_advance_min") or 1)}
+
+        narration = gm_response.get("narration") or "(The GM is silent.)"
+        success = bool(gm_response.get("success", True))
         await self._emit(make_event(tick, "gm_narration", "gm", {
             "text": narration,
-            "success": gm_response.get("success", True),
+            "success": success,
         }))
         # Episodic ingest: narration is a high-value episode.
         self.episodic.add(tick, "narration", narration, score_hint=1.0)
@@ -132,6 +233,17 @@ class Simulation:
                 "world": self.world.snapshot(),
             }))
             self.episodic.add(tick, "delta", " | ".join(notes), score_hint=0.6)
+
+        # 3a. Record the completed action in the durable ledger if it produced
+        # substantive state change. This is what makes the idempotency guard work
+        # on the NEXT tick and what surfaces in both prompts as "already done".
+        if success and delta_is_substantive(delta):
+            self.world.record_completed_action(
+                verb=action.verb,
+                target=action.target,
+                args=action.args,
+                summary=_summarize_delta(delta) or narration[:120],
+            )
 
         # 3b. Auto fail-state narration.
         auto = self.world.data.pop("auto_game_over", None)
@@ -242,10 +354,33 @@ def _build_llms() -> tuple[LLMClient, LLMClient]:
         return MockPlayerClient(), MockGameMasterClient()
     if backend == "ollama":
         return (
-            OllamaClient(settings.player_model),
-            OllamaClient(settings.gm_model),
+            OllamaClient(settings.player_model, temperature=settings.player_temperature),
+            OllamaClient(settings.gm_model, temperature=settings.gm_temperature),
         )
     raise ValueError(f"Unknown LLM_BACKEND: {settings.backend}")
+
+
+def _summarize_delta(delta: dict[str, Any]) -> str:
+    """Render a one-line summary of a substantive delta for the completed-actions ledger."""
+    bits: list[str] = []
+    inv_add = delta.get("inventory_add") or []
+    if inv_add:
+        bits.append(f"+inv {','.join(inv_add)}")
+    inv_rm = delta.get("inventory_remove") or []
+    if inv_rm:
+        bits.append(f"-inv {','.join(inv_rm)}")
+    for name, state in (delta.get("object_state") or {}).items():
+        bits.append(f"{name}={state}")
+    for name, state in (delta.get("npc_state") or {}).items():
+        bits.append(f"npc {name}={state}")
+    disc = delta.get("discovered_items") or []
+    if disc:
+        bits.append(f"discovered {','.join(disc)}")
+    for oid, status in (delta.get("objectives") or {}).items():
+        bits.append(f"obj {oid}={status}")
+    if delta.get("current_location"):
+        bits.append(f"loc={delta['current_location']}")
+    return "; ".join(bits)
 
 
 def _auto_fail_narration(kind: str, world: dict[str, Any]) -> str:

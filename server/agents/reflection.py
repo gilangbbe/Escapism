@@ -57,6 +57,17 @@ class Reflector:
             for f in (payload.get("new_facts") or [])
             if isinstance(f, str) and f.strip()
         ][:3]
+
+        # Always prepend a deterministic STATE DIGEST as the first new fact.
+        # This is one line that captures the current world state so future
+        # turns can never "forget" what is already true \u2014 it survives any
+        # known_facts truncation in the player/GM prompts.
+        digest = _state_digest(tick, world)
+        existing = set(world.get("known_facts") or [])
+        if digest and digest not in existing and digest not in new_facts:
+            new_facts = [digest] + new_facts
+            new_facts = new_facts[:4]  # allow one extra slot for the digest
+
         if not summary and not new_facts:
             return {}
         # Compact episodic memory: replace older raw episodes with the summary.
@@ -94,3 +105,33 @@ class Reflector:
             lines.append(f"- t{ev['tick']} [{ev['actor']}] {ev['kind']}: {text[:240]}")
         lines.append("\nReturn JSON only.")
         return "\n".join(lines)
+
+
+def _state_digest(tick: int, world: dict[str, Any]) -> str:
+    """One-line snapshot of durable state for the known_facts list.
+
+    Designed to survive ``known_facts[-N:]`` truncation in agent prompts so
+    long runs never \"forget\" what is already true.
+    """
+    inv = world.get("inventory") or []
+    obj_state = world.get("object_state") or {}
+    npc_state = world.get("npc_state") or {}
+    objectives = world.get("objectives") or {}
+    completed_objs = [oid for oid, s in objectives.items() if s == "complete"]
+    active_objs = [oid for oid, s in objectives.items() if s == "active"]
+    alarm = world.get("alarm_meter", 0)
+    alarm_max = world.get("alarm_max", 10)
+    loc = world.get("current_location", "?")
+
+    parts = [f"State digest @ t{tick}: location={loc}, alarm={alarm}/{alarm_max}"]
+    if inv:
+        parts.append(f"inventory=[{', '.join(inv[:10])}]")
+    if obj_state:
+        parts.append("objects=" + ", ".join(f"{k}:{v}" for k, v in list(obj_state.items())[:10]))
+    if npc_state:
+        parts.append("npcs=" + ", ".join(f"{k}:{v}" for k, v in npc_state.items()))
+    if completed_objs:
+        parts.append(f"completed_objectives=[{', '.join(completed_objs)}]")
+    if active_objs:
+        parts.append(f"active_objectives=[{', '.join(active_objs)}]")
+    return "; ".join(parts) + "."

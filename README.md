@@ -102,13 +102,13 @@ cards (brass monospace), and GM narration (dark stone).
 
 ```bash
 ollama serve &
-ollama pull qwen2.5:7b        # recommended: stronger planner for the Player
-ollama pull llama3.2          # adequate for the GM (mostly structured edits)
+ollama pull qwen2.5:7b        # recommended for BOTH agents (3B models drift on 30+ tick runs)
 
 LLM_BACKEND=ollama \
   PLAYER_MODEL=qwen2.5:7b \
-  GM_MODEL=llama3.2 \
-  LLM_TEMPERATURE=0.3 \
+  GM_MODEL=qwen2.5:7b \
+  PLAYER_TEMPERATURE=0.3 \
+  GM_TEMPERATURE=0.15 \
   LLM_SEED=42 \
   python -m server
 ```
@@ -121,15 +121,11 @@ re-indexed automatically when `data/game.jsonl` changes (mtime check).
 Setting `LLM_SEED` makes the Ollama runs reproducible.
 
 **Model picking notes.**
-- The **Player** needs multi-step planning (chain inventory items, avoid
-  re-examining what it just examined). Small instruct models like
-  `llama3.2:3b` will frequently loop on a single EXAMINE; use a 7B+ model
-  (`qwen2.5:7b`, `llama3.1:8b`, `mistral:7b-instruct`) here.
-- The **GM** mostly emits structured deltas grounded in retrieved clues, so
-  `llama3.2:3b` is fine. Upgrade only if narration quality matters.
-- The Player prompt enforces an anti-repeat rule and the Simulation injects
-  a `system_hint` event when the same `(verb, target)` repeats 3 turns in a
-  row, so even smaller models recover from loops eventually.
+- Both agents default to `qwen2.5:7b`. Smaller models (3B class) reliably drift on 30+ tick runs — they forget state, re-issue completed actions, raise the alarm spuriously, and repeat narration.
+- The **Player** needs multi-step planning (chain inventory items, avoid re-examining what it just examined). Use `qwen2.5:7b`, `llama3.1:8b`, or `mistral:7b-instruct`.
+- The **GM** mostly emits structured deltas grounded in retrieved clues. `qwen2.5:7b` at low temperature (`GM_TEMPERATURE=0.15`) is the sweet spot for adjudication. Even at 7B the GM occasionally hallucinates puzzle outcomes; the server-side **puzzle precondition validator** (see below) is the hard backstop.
+- The Player prompt enforces an anti-repeat rule and the Simulation injects a `system_hint` event when the same `(verb, target)` repeats 3 turns in a row, so even smaller models recover from loops eventually.
+- Knobs: `PLAYER_TEMPERATURE` (default 0.3), `GM_TEMPERATURE` (default 0.15). Both fall back to `LLM_TEMPERATURE` if set.
 
 ## Smarter cognition (Phase 4)
 
@@ -155,6 +151,57 @@ The Player loop is layered with four cognitive aids beyond the bare
   (`SALTY_TIER_STEP`, default 3 repeats per tier): vague nudge →
   corpus `kind=hint, tier≤2` → corpus `kind=hint, tier=3` or
   `kind=puzzle`. Tier shows on the UI hint chip.
+
+### Anti state-drift (completed-actions ledger)
+
+Long runs (~30+ ticks) used to drift: the GM would narrate “you brew the
+herbs” at tick 20 but emit no matching `delta`, and at tick 30 the
+Player would brew them again because the world snapshot never reflected
+the first attempt. Three guards now prevent this:
+
+- **Completed-actions ledger.** `WorldState.completed_actions` is an
+  append-only list of `{tick, verb, target, on, summary}` written after
+  every successful, substantive delta. Idempotent on
+  `(verb, target, on)`. Surfaced in both the GM and the Player prompts
+  as their own section — durable memory of *action*, independent of any
+  context window.
+- **Idempotency guard.** Before calling the GM, the simulation checks
+  the ledger for the player's exact `(verb, target, on)`. For
+  state-changing verbs (USE, COMBINE, TAKE, MOVE_TO) a hit short-circuits
+  the GM entirely and emits a redirect narration instead. EXAMINE /
+  SEARCH are always allowed to repeat (information verbs).
+- **Narration↔delta consistency retry.** If the GM emits `success: true`
+  with a non-substantive delta (empty, or only `time_advance_min` /
+  `alarm_delta`), the simulation re-prompts once with an inline
+  correction. If the retry still won't comply, the response is forced to
+  `success: false` with a *“Nothing actually changed”* tag so the
+  Player adapts.
+
+### Puzzle precondition validation (corpus + code)
+
+LLMs — even at 7B — occasionally hand out a puzzle’s reward without
+actually solving it. The system grounds outcomes in the corpus and
+enforces them in code:
+
+- **Corpus contract.** Each `kind="puzzle"` document in `data/game.jsonl`
+  declares a `trigger` (the action that attempts it), `preconditions`
+  (what must be true beforehand) and `effects` (what changes on
+  success). Example for `puzzle.retrieve_keys`:
+  `trigger {USE rope_grapple on hal_keyring}`,
+  `preconditions {npc_state.hal=drugged_deep_sleep, object_state.rope_coil=rigged}`,
+  `effects {inventory_add:[hal_keyring]}`.
+- **GM prompt injection.** When the player’s action matches a puzzle
+  trigger, the GM prompt gains a *“Triggered puzzle (FORMAL
+  PRECONDITIONS — obey strictly)”* section with the contract spelled
+  out and any currently-unmet preconditions listed. If any are unmet, the
+  GM is told to emit `success: false`.
+- **Server-side validator (`server/agents/puzzle_validator.py`).** After
+  the GM responds, the simulation checks: “does this delta grant any of
+  the puzzle’s declared effects, while any precondition is unmet?” If
+  yes, it re-prompts the GM once with a hard correction; if the GM still
+  won’t comply, the response is forced to `success: false` with a small
+  alarm/time cost. Mira cannot, for example, receive `hal_keyring` until
+  Hal is `drugged_deep_sleep` and the rope is `rigged`.
 
 ## How the architecture fights hallucination
 

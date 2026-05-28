@@ -46,6 +46,11 @@ Status legend: `[x]` done · `[~]` in progress · `[ ]` not started
 - [x] Episodic / semantic memory split for the Player Agent (in-memory episodic store; Chroma stays semantic)
 - [x] BDI overlay (Belief / Desire / Intention) above the action loop
 - [x] Salty parrot as an in-game tiered hint provider (Tier 1/2/3 from the design doc)
+- [x] Completed-actions ledger + idempotency guard + narration↔delta consistency retry
+  (anti state-drift hardening on top of the BDI loop)
+- [x] Reflection emits a deterministic state digest (location, alarm, inventory, object/npc/objective state) every reflection tick so long runs cannot “forget” state even when the LLM context is truncated
+- [x] Per-agent temperature knobs (`PLAYER_TEMPERATURE`, `GM_TEMPERATURE`); default models bumped to `qwen2.5:7b` for both agents (3B class models drift on 30+ tick runs)
+- [x] Corpus-declared puzzle preconditions & effects (`trigger`, `preconditions`, `effects` on `kind=puzzle` docs in `game.jsonl`) + server-side validator: GM cannot grant a puzzle’s effects when its preconditions are unmet — enforced by `server/agents/puzzle_validator.py`
 
 ## Phase 5 — Multi-agent + replayability
 

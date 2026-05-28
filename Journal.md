@@ -189,3 +189,128 @@ with `player_bdi` persisted on the final snapshot.
 
 Knobs added: `REFLECT_EVERY` (env, default 5; 0 disables) and
 `SALTY_TIER_STEP` (env, default 3).
+
+## 2026-05-28 — Anti state-drift: completed-actions ledger + consistency retry
+
+Observed in a long Ollama run (35+ ticks): Mira would brew the herbs at
+tick 20 (GM narrates success), then at tick 30 brew them AGAIN as if the
+first time had never happened. Diagnosis: the GM was emitting `narration`
+without a matching `delta`, so the world snapshot never reflected the
+claim. By the time the action drifted out of the recent-events window,
+both agents “forgot” it had ever happened. Five fixes shipped together:
+
+1. **Completed-actions ledger.** `WorldState` now keeps an append-only
+   `completed_actions: [{tick, verb, target, on, summary}]`. The
+   simulation writes to it after every successful, substantive delta via
+   `WorldState.record_completed_action(...)`. The entry is idempotent on
+   `(verb, target, on)` so a re-trigger never duplicates. Both the Player
+   and the GM prompts now include a `## Completed actions / Actions you
+   have ALREADY COMPLETED` section drawn from this ledger — durable,
+   deterministic, and survives any context-window truncation.
+2. **Pre-GM idempotency guard.** Before calling the GM, the simulation
+   checks `WorldState.find_completed_action(...)` for the player's exact
+   `(verb, target, on)`. For state-changing verbs (USE, COMBINE, TAKE,
+   MOVE_TO) a hit short-circuits the GM entirely — it emits a
+   `gm_narration` (flagged `idempotent: true`) redirecting Mira to the
+   next step and feeds it into episodic memory. EXAMINE / SEARCH are
+   never short-circuited (information verbs may legitimately repeat).
+3. **Narration↔delta consistency rule + retry.** New `delta_is_substantive`
+   helper in `world/state.py` recognizes deltas that mutate world facts
+   (anything beyond `time_advance_min` / `alarm_delta`). If the GM emits
+   `success: true` with a non-substantive delta, the simulation calls
+   `GameMasterAgent.adjudicate(..., correction=...)` once with an inline
+   correction note explaining the violation. If the retry still won't
+   comply, the simulation forces `success: false` and appends *“Nothing
+   actually changed; the attempt was hollow.”* so the player at least
+   sees the rejection and adapts.
+4. **GM prompt hardened.** New CRITICAL sections: “Idempotency — NEVER
+   re-do completed actions” (with a worked example: USE herbs on vial
+   when herbs are already brewed → empty delta + redirect) and
+   “Narration↔delta consistency” (success true implies at least one
+   substantive delta field). The recent-events window now shows actual
+   payload text (narration, delta notes, action verbs) instead of bare
+   event-kind names, and was widened from 10 to 16 entries.
+5. **Player prompt updated.** New `Actions you have ALREADY COMPLETED`
+   section pulled from the ledger; recent-events window now shows
+   narration text and delta notes; anti-loop rules explicitly forbid
+   re-attempting anything in the completed-actions ledger.
+
+Tests: `tests/test_completed_actions.py` (10 cases covering
+`delta_is_substantive` + ledger add/find/idempotency) and
+`tests/test_simulation_consistency.py` (6 async cases covering guard
+short-circuit, retry success, retry-fails-fallback, ledger writes, no
+log on failure, EXAMINE never guarded). Suite is 90 / 90 green; mock
+smoke still escapes the brig in 13 ticks with a 13-entry
+`completed_actions` ledger on the final snapshot.
+
+This closes the worst class of bug the BDI overlay couldn't reach —
+memory of *belief* is no longer enough; we now have a durable memory of
+*action*.
+
+## 2026-05-28 — Phase 4 polish: state digest, per-agent temps, puzzle preconditions
+
+Even with the completed-actions ledger and the consistency retry, a
+long Ollama run at `llama3.2:3b` (both agents) still drifted: the GM
+repeated narration verbatim and started raising the alarm spuriously.
+Three coupled changes shipped today address it from three angles —
+memory, model, and rules.
+
+1. **Deterministic state digest in reflection.** Every reflection tick,
+   `Reflector` now prepends a one-line digest of the world snapshot
+   (location, alarm meter, inventory, object/npc/objective state) to the
+   LLM-emitted `new_facts`. The digest is deduplicated against existing
+   `known_facts` and the cap grows from 3 to 4 when the digest is
+   present. Result: even when the LLM emits garbage and even when the
+   context window truncates prior facts, both agents always have at
+   least one authoritative “this is the world right now” sentence in
+   their prompts.
+2. **Per-agent temperatures + bigger default model.** `Settings` gained
+   `player_temperature` (env `PLAYER_TEMPERATURE`, default 0.3) and
+   `gm_temperature` (env `GM_TEMPERATURE`, default 0.15 — deliberately
+   low for adjudication). Both fall back to `LLM_TEMPERATURE` if set.
+   `OllamaClient` already supports per-instance temperature override;
+   `simulation._build_llms` now uses it. Default `PLAYER_MODEL` and
+   `GM_MODEL` are both `qwen2.5:7b` (was `llama3.2`) — 3B-class models
+   simply cannot track state across 30+ ticks.
+3. **Puzzle preconditions + effects (corpus + validator).** The four
+   Act-1 puzzle documents in `data/game.jsonl` now declare structured
+   `trigger`, `preconditions`, and `effects`. New module
+   `server/agents/puzzle_validator.py` provides:
+   - `find_triggered_puzzle(clues, verb, target, args, scope)` — match a
+     player action to its puzzle doc.
+   - `check_preconditions(puzzle, world)` — returns a list of unmet
+     preconditions (inventory_has, object_state, npc_state, discovered).
+   - `delta_grants_effect(delta, puzzle)` — does this GM delta hand out
+     any of the puzzle’s declared effects?
+   - `format_precondition_brief(puzzle)` — one-line summary for prompt
+     injection.
+
+   Wired both ways:
+   - In `GameMasterAgent._build_user_prompt`: if the player’s action
+     triggers a puzzle, the prompt gains a *“Triggered puzzle (FORMAL
+     PRECONDITIONS — obey strictly)”* section listing the contract and
+     any currently-unmet preconditions, with an explicit instruction to
+     emit `success: false` when unmet.
+   - In `Simulation._take_turn`: after the existing consistency retry,
+     if the GM granted any of the puzzle’s effects while preconditions
+     are unmet, the simulation re-prompts the GM once with a hard
+     correction. If the retry still won’t comply, the response is
+     forced to `success: false` with a *“Cannot complete: ...”* narration
+     and a small `time_advance_min` / `alarm_delta` cost. The puzzle’s
+     effects can no longer leak into the world before its preconditions
+     are met.
+
+Tests: `tests/test_puzzle_validator.py` covers trigger matching
+(verb/target/on + scope + case-insensitivity), every precondition type
+met + unmet (singly and stacked), each effect-overlap branch, and the
+brief formatter. Existing `tests/test_reflection.py` updated to expect
+the prepended digest. Suite is 106 / 106 green; mock smoke still
+escapes the brig in 13 ticks (mock GM table happens to satisfy
+preconditions in the right order, so the validator is a no-op on the
+canonical solution — it only fires when the GM tries to cheat).
+
+This is the final layer of the anti-drift stack: memory of belief
+(episodic + reflection), memory of action (completed-actions ledger),
+deterministic memory of state (digest), and now corpus-grounded memory
+of rules (puzzle preconditions). The 3B-vs-7B model question becomes
+mostly a quality knob rather than a correctness one.

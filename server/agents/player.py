@@ -45,6 +45,8 @@ SYSTEM_RULES = (
     "\n## Anti-loop rules (CRITICAL)\n"
     "- NEVER repeat the same (verb, target) you used in your last 3 actions. Look at the 'Recent actions' "
     "  list below: if your last action was EXAMINE hal_keyring, do NOT EXAMINE hal_keyring again.\n"
+    "- NEVER attempt anything listed in 'Actions you have ALREADY COMPLETED'. Those state changes "
+    "  are permanent; the world reflects them already. Trying again wastes time and raises the alarm.\n"
     "- EXAMINE and SEARCH are information verbs. After you have examined something once, your next "
     "  action on it MUST be a state-changing verb: TAKE, USE, COMBINE, MOVE_TO, or WAIT.\n"
     "- If a previous action produced no visible change in the world snapshot (no new inventory, no new "
@@ -136,11 +138,32 @@ class PlayerAgent:
         else:
             sections.append("- (none yet)")
 
+        # Completed actions \u2014 the durable, deterministic anti-repeat ledger.
+        completed = world.get("completed_actions") or []
+        sections.append("\n## Actions you have ALREADY COMPLETED (do NOT re-do these)")
+        if completed:
+            for entry in completed[-12:]:
+                args = f" on={entry['on']}" if entry.get("on") else ""
+                sections.append(
+                    f"- t{entry.get('tick','?')}: {entry.get('verb','?')} {entry.get('target','')}{args} \u2192 {entry.get('summary','')}"
+                )
+        else:
+            sections.append("- (none yet)")
+
         sections.append("\n## Recent narration / events")
-        for ev in history[-8:]:
-            if ev.get("kind") in {"player_action", "player_thought", "player_say"}:
-                continue
-            sections.append(f"- t{ev['tick']} [{ev['actor']}] {ev['kind']}: {self._render_event(ev)}")
+        for ev in history[-12:]:
+            kind = ev.get("kind")
+            payload = ev.get("payload") or {}
+            if kind == "gm_narration":
+                sections.append(f"- t{ev['tick']} [gm] narration: {(payload.get('text') or '')[:220]}")
+            elif kind == "gm_state_delta":
+                notes = payload.get("notes") or []
+                if notes:
+                    sections.append(f"- t{ev['tick']} [gm] delta: {'; '.join(notes)[:200]}")
+            elif kind == "system_hint":
+                sections.append(f"- t{ev['tick']} [system] hint: {(payload.get('text') or '')[:200]}")
+            elif kind == "reflection":
+                sections.append(f"- t{ev['tick']} [system] reflection: {(payload.get('summary') or '')[:200]}")
 
         if recent_hints:
             sections.append("\n## System hints (heed these)")

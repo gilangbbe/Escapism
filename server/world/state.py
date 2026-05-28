@@ -41,6 +41,56 @@ class WorldState:
         self.data["tick"] = self.tick + 1
         return self.data["tick"]
 
+    def record_completed_action(
+        self,
+        *,
+        verb: str,
+        target: str,
+        args: dict[str, Any] | None,
+        summary: str,
+    ) -> None:
+        """Append an entry to ``completed_actions``. Idempotent on (verb, target, on)."""
+        log = self.data.setdefault("completed_actions", [])
+        on = ""
+        if isinstance(args, dict):
+            on = str(args.get("on") or args.get("b") or args.get("location") or "").strip()
+        key = (verb.upper(), target, on)
+        for entry in log:
+            if (
+                entry.get("verb", "").upper() == key[0]
+                and entry.get("target", "") == key[1]
+                and entry.get("on", "") == key[2]
+            ):
+                return  # already logged
+        log.append({
+            "tick": self.tick,
+            "verb": verb.upper(),
+            "target": target,
+            "on": on,
+            "summary": summary,
+        })
+
+    def find_completed_action(
+        self,
+        *,
+        verb: str,
+        target: str,
+        args: dict[str, Any] | None,
+    ) -> dict[str, Any] | None:
+        """Return a completed-action entry matching this (verb, target, on), else None."""
+        on = ""
+        if isinstance(args, dict):
+            on = str(args.get("on") or args.get("b") or args.get("location") or "").strip()
+        log = self.data.get("completed_actions") or []
+        for entry in log:
+            if (
+                entry.get("verb", "").upper() == verb.upper()
+                and entry.get("target", "") == target
+                and entry.get("on", "") == on
+            ):
+                return entry
+        return None
+
     def apply_delta(self, delta: dict[str, Any]) -> list[str]:
         """Apply a structured delta from the GM. Returns list of human-readable change notes."""
         notes: list[str] = []
@@ -138,3 +188,29 @@ def _advance_clock(hhmm: str, minutes: int) -> str:
         return hhmm
     total = (h * 60 + m + minutes) % (24 * 60)
     return f"{total // 60:02d}:{total % 60:02d}"
+
+
+_SUBSTANTIVE_KEYS = (
+    "inventory_add", "inventory_remove",
+    "npc_state", "object_state",
+    "discovered_items", "known_facts_add",
+    "objectives", "scene_id", "current_location",
+    "game_over", "set",
+)
+
+
+def delta_is_substantive(delta: dict[str, Any] | None) -> bool:
+    """True iff the delta would actually mutate world facts (not just time/alarm).
+
+    A GM that narrates success but emits only ``time_advance_min`` / ``alarm_delta``
+    has effectively lied to the player \u2014 the world won't reflect the claim.
+    """
+    if not isinstance(delta, dict):
+        return False
+    for key in _SUBSTANTIVE_KEYS:
+        value = delta.get(key)
+        if isinstance(value, (list, dict)) and len(value) > 0:
+            return True
+        if isinstance(value, str) and value.strip():
+            return True
+    return False
