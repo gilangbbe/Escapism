@@ -93,9 +93,9 @@ pipeline that generates entire scenarios (world, puzzles, prose) as
 
 ### Phase C — Affordance engine
 
-- [ ] `server/world/affordances.py`: enumerate legal `(verb, target, on)` tuples from world + bundle
-- [ ] Surface the menu in the Player prompt; tighten `PlayerAction` so the verb/target must come from the menu
-- [ ] Eliminate the action-space hallucination class (e.g. invented composite target ids)
+- [x] `server/world/affordances.py`: enumerate legal `(verb, target, on)` tuples from world + bundle
+- [x] Surface the menu in the Player prompt; tighten `PlayerAction` so the verb/target must come from the menu (hybrid: validator rejects off-menu, resamples once with correction, then auto-picks top entry)
+- [x] Eliminate the action-space hallucination class (e.g. invented composite target ids) — `op_id` now flows through `completed_actions` so spent operators are filtered, and EXAMINE/SEARCH repeats are annotated `⚠ tried Nx, no new info`
 
 ### Phase D — Generator pipeline (LLM)
 

@@ -48,8 +48,14 @@ class WorldState:
         target: str,
         args: dict[str, Any] | None,
         summary: str,
+        op_id: str = "",
     ) -> None:
-        """Append an entry to ``completed_actions``. Idempotent on (verb, target, on)."""
+        """Append an entry to ``completed_actions``. Idempotent on (verb, target, on).
+
+        ``op_id`` (if set) links this entry to the corpus operator that fired.
+        The affordance enumerator uses it to hard-filter spent operators from
+        the next turn's menu.
+        """
         log = self.data.setdefault("completed_actions", [])
         on = ""
         if isinstance(args, dict):
@@ -61,14 +67,20 @@ class WorldState:
                 and entry.get("target", "") == key[1]
                 and entry.get("on", "") == key[2]
             ):
-                return  # already logged
-        log.append({
+                # Backfill op_id if previously unknown.
+                if op_id and not entry.get("op_id"):
+                    entry["op_id"] = op_id
+                return
+        entry = {
             "tick": self.tick,
             "verb": verb.upper(),
             "target": target,
             "on": on,
             "summary": summary,
-        })
+        }
+        if op_id:
+            entry["op_id"] = op_id
+        log.append(entry)
 
     def find_completed_action(
         self,

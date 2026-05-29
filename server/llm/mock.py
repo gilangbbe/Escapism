@@ -31,9 +31,9 @@ _PLAYER_SCRIPT: list[dict] = [
         "action": {"verb": "SEARCH", "target": "crew_unconscious", "args": {}},
     },
     {
-        "thought": "Kwame keeps rope on him. The cell corner is dark — feel around.",
+        "thought": "Kwame keeps rope on him. The ceiling hook above Hal's desk \u2014 measure the throw.",
         "say": "",
-        "action": {"verb": "EXAMINE", "target": "brig_corner", "args": {}},
+        "action": {"verb": "EXAMINE", "target": "ceiling_hook", "args": {}},
     },
     {
         "thought": "Bunk's bolted to the wall. There's a nail working loose underneath.",
@@ -53,7 +53,7 @@ _PLAYER_SCRIPT: list[dict] = [
     {
         "thought": "Now heat the vial in the focused flame for two minutes. Quietly.",
         "say": "",
-        "action": {"verb": "USE", "target": "vial", "args": {"on": "lantern_focused"}},
+        "action": {"verb": "USE", "target": "glass_vial", "args": {"on": "lantern_focused"}},
     },
     {
         "thought": "Rope over the ceiling hook above Hal's desk. The bars stop arms, not rope.",
@@ -120,9 +120,9 @@ def _gm_table() -> dict[tuple[str, str], dict]:
                 "time_advance_min": 2,
             },
         },
-        ("EXAMINE", "brig_corner"): {
-            "narration": "Your hand closes on coarse hemp — Kwame's twenty-foot coil, already in your inventory.",
-            "delta": {"time_advance_min": 1},
+        ("EXAMINE", "ceiling_hook"): {
+            "narration": "Above Hal's desk, an old iron beam-hook is set into the deckhead \u2014 once used to hang lanterns. Within rope-throwing range from inside the bars.",
+            "delta": {"time_advance_min": 1, "known_facts_add": ["Ceiling hook above Hal's desk is reachable from inside the cell with a rope."]},
         },
         ("EXAMINE", "bunk"): {
             "narration": (
@@ -157,7 +157,7 @@ def _gm_table() -> dict[tuple[str, str], dict]:
                 "time_advance_min": 1,
             },
         },
-        ("USE", "vial->lantern_focused"): {
+        ("USE", "glass_vial->lantern_focused"): {
             "narration": (
                 "You hold the vial in the hot pinprick of focused light. Two slow minutes pass. The contents "
                 "darken, releasing a sweet, sleepy scent. A draught strong enough to drop a horse."

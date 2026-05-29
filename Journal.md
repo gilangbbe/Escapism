@@ -4,6 +4,92 @@ A running log of decisions and the reasoning behind them. Append-only.
 
 ---
 
+## 2026-05-29 — Phase 7-C: affordance engine (Layer-2 action-space lock)
+
+The pivot: instead of patching the Player's hallucinations one at a time
+(e.g. inventing `brig_corner`, choosing `vial` when the operator wants
+`glass_vial`), derive a **per-turn legal-action menu** from the world
+state + bundle operators and force the Player to pick from it. This is
+the generic Layer-2 mechanism that every future bundle inherits — no
+per-scenario hard-coding.
+
+### What shipped
+
+- `server/world/affordances.py` (new) — generator-agnostic menu engine:
+  - `extract_operators(docs)` lifts any corpus doc with `trigger`+`effects`.
+  - `enumerate_menu(world, operators, history)` emits four categories:
+    `advance` (fireable, non-spent operators), `inspect` (EXAMINE/SEARCH
+    on current location, inventory, discovered items, object/npc state
+    keys), `wait` floor, `communicate` floor.
+  - `validate_action(verb, target, args, menu)` strict match, with
+    COMBINE treated as symmetric (accepts `target/on` OR `args.a/b` in
+    either order) and MOVE_TO accepting `args.location`.
+  - `render_menu(...)` numbered markdown grouped by category; repeated
+    EXAMINE/SEARCH annotated `⚠ tried Nx, no new info`.
+  - `synthesize_fallback_action(...)` picks the top entry by priority
+    advance → inspect → wait → communicate.
+- `server/world/state.py` — `record_completed_action(..., op_id="")` so
+  the durable ledger carries the operator id that fired.
+- `server/agents/player.py` — `decide(..., menu=None, correction=None)`
+  renders the menu under `## Legal actions this turn (PICK EXACTLY ONE)`
+  and surfaces a `## CORRECTION` section when a previous attempt was
+  rejected.
+- `server/simulation.py` — `_decide_with_menu_enforcement` runs the
+  hybrid loop: decide → validate → if off-menu, resample once with a
+  correction message → if still off-menu, fall back to the menu's top
+  entry and emit `system_hint{reason: off_menu_fallback}`. The chosen
+  `op_id` is threaded into `player_action` events and the completed
+  ledger.
+
+### Policy choices the user ratified
+
+- **Enforcement model**: hybrid — render the menu in the prompt,
+  validator rejects off-menu actions, resample with correction, and on
+  exhaustion auto-pick the top menu entry. Picked over hard-refuse
+  (brittle) and prompt-only (no teeth).
+- **EXAMINE/SEARCH anti-repeat**: annotate-only — repeated inspections
+  stay visible but carry `⚠ tried Nx, no new info`. This preserves
+  player agency for narrative re-reads while making the cost obvious.
+
+### The hal_keyring bug (worth remembering)
+
+First cut of `_effects_already_realized` filtered any `inventory_add`
+operator whose item appeared in *either* `inventory` *or*
+`discovered_items`. Mock smoke regressed 13 → 60 ticks because the
+`hal_keyring` is *visible on Hal's belt at t=0* (`discovered_items`),
+but the operator that puts it in the player's pocket hadn't fired yet.
+The menu permanently hid `puzzle.retrieve_keys` and the player
+WAIT-spammed until the cap.
+
+Lesson: **"discovered" ≠ "realized"**. Visibility in the world is the
+*precondition* for inventory_add operators, not evidence the operator
+has already executed. Realization for `inventory_add` is `item in
+inventory` only. Pinned by `test_effects_already_realized_does_not_count_discovered_items`
+and `test_black_vesper_retrieve_keys_appears_after_setup`.
+
+### Test infra fallout
+
+`tests/test_simulation_consistency.py` used minimal worlds and synthetic
+verb chains (e.g. `USE herbs on vial`) that no real bundle declares.
+With the new menu-enforcement gate, those actions were rejected as
+off-menu and the fake player's scripted-action cursor overflowed.
+
+Fix: `_build_sim` now takes `world_extras` to seed visible state, and
+`_synthesize_operators_for(actions)` builds a permissive no-precondition
+operator per scripted action so the menu accepts them. The idempotency
+test was reframed: the menu *filters* the spent operator on turn 2 (so
+the brew can't refire), which is a stronger invariant than the old
+guard-side short-circuit.
+
+### Numbers
+
+- Tests: 119 → **139** (added 14 affordance tests + 6 reframed
+  consistency tests still pass).
+- Mock smoke: unchanged at 13 ticks → `poc_complete`, with all 10
+  ledger entries carrying `op_id`.
+
+---
+
 ## 2026-05-26 — PoC v0 (BFS toy, superseded)
 
 Built a single-file gridworld escape room with a hand-coded BFS agent.

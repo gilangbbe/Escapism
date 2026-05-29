@@ -12,6 +12,7 @@ from typing import Any
 
 from ..llm import LLMClient, Message
 from ..memory import ClueStore, EpisodicMemory
+from ..world.affordances import Affordance, render_menu
 from .protocol import PLAYER_ACTION_SCHEMA, PlayerAction, parse_player_response
 
 
@@ -53,6 +54,17 @@ SYSTEM_RULES = (
     "  known_fact, no objective progress), it was a dead end. Try a DIFFERENT verb or a DIFFERENT target.\n"
     "- Re-read the 'objectives' that are still active and pick the action that most directly advances one "
     "  of them. Items in your inventory exist to be USED or COMBINED, not re-examined.\n"
+    "\n## Legal-action menu (HARD CONSTRAINT)\n"
+    "- Each turn the simulator computes the exact set of `(verb, target, on)` actions that are\n"
+    "  valid given the world state and the scenario's operator graph. That menu appears below\n"
+    "  under 'Legal actions this turn'.\n"
+    "- Your `action` field MUST exactly match one of those entries (verb, target, and `args.on`\n"
+    "  if present). If you emit anything else \u2014 a verb not in the menu, a target id that\n"
+    "  doesn't appear in the menu, or a composite/invented target \u2014 the action will be REJECTED\n"
+    "  and you will be asked to choose again. Two rejections and the simulator picks for you.\n"
+    "- Prefer entries from the **Advance** section: those are the moves that change the world.\n"
+    "- Inspection entries marked `\u26a0 tried Nx, no new info` have already given you everything\n"
+    "  they will. Do not pick them again unless the world has visibly changed since.\n"
     "\nOutput ONLY the JSON object. No prose before or after."
 )
 
@@ -63,8 +75,15 @@ class PlayerAgent:
     clues: ClueStore
     episodic: EpisodicMemory | None = None
 
-    def decide(self, world: dict[str, Any], history: list[dict[str, Any]]) -> PlayerAction:
-        prompt = self._build_user_prompt(world, history)
+    def decide(
+        self,
+        world: dict[str, Any],
+        history: list[dict[str, Any]],
+        *,
+        menu: list[Affordance] | None = None,
+        correction: str | None = None,
+    ) -> PlayerAction:
+        prompt = self._build_user_prompt(world, history, menu=menu, correction=correction)
         messages = [
             Message("system", PERSONA + "\n\n" + SYSTEM_RULES),
             Message("user", prompt),
@@ -75,7 +94,14 @@ class PlayerAgent:
         return action
 
     # ------------------------------------------------------------------ prompt
-    def _build_user_prompt(self, world: dict[str, Any], history: list[dict[str, Any]]) -> str:
+    def _build_user_prompt(
+        self,
+        world: dict[str, Any],
+        history: list[dict[str, Any]],
+        *,
+        menu: list[Affordance] | None = None,
+        correction: str | None = None,
+    ) -> str:
         scope = f"act{world.get('act', 1)}"
         retrieved = self.clues.query(
             self._retrieval_query(world, history), k=6, scope=scope
@@ -138,7 +164,7 @@ class PlayerAgent:
         else:
             sections.append("- (none yet)")
 
-        # Completed actions \u2014 the durable, deterministic anti-repeat ledger.
+        # Completed actions — the durable, deterministic anti-repeat ledger.
         completed = world.get("completed_actions") or []
         sections.append("\n## Actions you have ALREADY COMPLETED (do NOT re-do these)")
         if completed:
@@ -149,6 +175,19 @@ class PlayerAgent:
                 )
         else:
             sections.append("- (none yet)")
+
+        # Legal-action menu — the structural bound on what you may emit.
+        if menu:
+            sections.append("\n## Legal actions this turn (PICK EXACTLY ONE)")
+            sections.append(render_menu(menu))
+            sections.append(
+                "\nYour `action.verb`, `action.target`, and `action.args.on` must match one of the "
+                "entries above EXACTLY. Off-menu actions will be rejected."
+            )
+
+        if correction:
+            sections.append("\n## CORRECTION — your last attempt was rejected")
+            sections.append(correction)
 
         sections.append("\n## Recent narration / events")
         for ev in history[-12:]:

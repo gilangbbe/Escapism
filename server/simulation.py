@@ -25,6 +25,15 @@ from .llm import (
 )
 from .memory import ClueStore, EpisodicMemory
 from .world import RunStore, WorldState, delta_is_substantive, make_event, now_ts
+from .world.affordances import (
+    Affordance,
+    enumerate_menu,
+    extract_operators,
+    render_menu,
+    synthesize_fallback_action,
+    validate_action,
+)
+from tools.solver.state_search import Operator
 
 
 Broadcaster = Callable[[dict[str, Any]], Awaitable[None]]
@@ -41,6 +50,7 @@ class Simulation:
     clues: ClueStore | None = None
     reflector: Reflector | None = None
     broadcast: Broadcaster | None = None
+    operators: list[Operator] = field(default_factory=list)
     events: list[dict[str, Any]] = field(default_factory=list)
     finished: bool = False
 
@@ -68,6 +78,7 @@ class Simulation:
         return cls(
             world=world, player=player, gm=gm, run=run,
             episodic=episodic, salty=salty, clues=clues, reflector=reflector,
+            operators=extract_operators(clues.docs),
             broadcast=broadcast,
         )
 
@@ -99,8 +110,19 @@ class Simulation:
     async def _take_turn(self) -> None:
         tick = self.world.next_tick()
 
-        # 1. Player decides.
-        action = self.player.decide(self.world.snapshot(), self.events)
+        # 1. Build this turn's legal-action menu and let the player choose.
+        menu = enumerate_menu(self.world.snapshot(), self.operators, self.events)
+        await self._emit(make_event(tick, "legal_menu", "system", {
+            "count": len(menu),
+            "entries": [
+                {"verb": a.verb, "target": a.target, "on": a.on,
+                 "category": a.category, "op_id": a.op_id,
+                 "repeat_count": a.repeat_count, "last_was_no_op": a.last_was_no_op}
+                for a in menu
+            ],
+        }))
+        action, chosen = self._decide_with_menu_enforcement(tick, menu)
+
         if action.thought:
             await self._emit(make_event(tick, "player_thought", "mira", {"text": action.thought}))
         if action.say:
@@ -111,7 +133,16 @@ class Simulation:
             },
             "intent": action.intent,
             "plan": action.plan or [],
+            "op_id": chosen.op_id if chosen else "",
+            "menu_category": chosen.category if chosen else "off_menu",
         }))
+
+        off_menu_hint = action.raw.pop("_off_menu_hint", None)
+        if off_menu_hint:
+            await self._emit(make_event(tick, "system_hint", "system", {
+                "text": off_menu_hint, "reason": "off_menu_fallback",
+            }))
+            self.episodic.add(tick, "hint", off_menu_hint, score_hint=1.5)
 
         # 1a. Persist BDI in the world.
         self._update_bdi(action)
@@ -244,6 +275,7 @@ class Simulation:
                 target=action.target,
                 args=action.args,
                 summary=_summarize_delta(delta) or narration[:120],
+                op_id=str(action.raw.get("_menu_op_id") or ""),
             )
 
         # 3b. Auto fail-state narration.
@@ -263,6 +295,64 @@ class Simulation:
             and tick % settings.reflect_every == 0
         ):
             await self._reflect(tick)
+
+    def _decide_with_menu_enforcement(
+        self, tick: int, menu: list[Affordance],
+    ) -> tuple[Any, Affordance | None]:
+        """Call the player; if the action is off-menu, resample once; then fall back.
+
+        Returns (action, chosen_affordance | None). The chosen affordance is
+        stashed on `action.raw["_menu_op_id"]` so the completed-actions ledger
+        can link the entry to its corpus operator.
+        """
+        snapshot = self.world.snapshot()
+        action = self.player.decide(snapshot, self.events, menu=menu)
+        chosen = validate_action(
+            verb=action.verb, target=action.target, args=action.args, menu=menu,
+        )
+        if chosen is None:
+            attempted = action.raw.get("action") or {
+                "verb": action.verb, "target": action.target, "args": action.args,
+            }
+            correction = (
+                f"Your action `{action.verb} {action.target or ''}` "
+                f"{('on ' + str((action.args or {}).get('on', ''))) if (action.args or {}).get('on') else ''}".rstrip()
+                + " is NOT in this turn's legal-action menu. "
+                "Re-read the **Legal actions this turn** section and emit an `action` whose "
+                "`verb`, `target`, and `args.on` exactly match ONE of those entries. "
+                "Prefer the Advance section over Inspect."
+            )
+            action = self.player.decide(snapshot, self.events, menu=menu, correction=correction)
+            chosen = validate_action(
+                verb=action.verb, target=action.target, args=action.args, menu=menu,
+            )
+            if chosen is None:
+                # Two strikes — pick the top advance/inspect entry for the player.
+                fallback = synthesize_fallback_action(menu)
+                fb_aff = validate_action(
+                    verb=fallback["verb"], target=fallback["target"],
+                    args=fallback.get("args"), menu=menu,
+                )
+                hint = (
+                    f"Twice you chose actions that are not in this turn's menu (last attempt: "
+                    f"{attempted.get('verb','?')} {attempted.get('target','')}). "
+                    f"The simulator is substituting the top legal entry: "
+                    f"`{fb_aff.action_label() if fb_aff else fallback['verb']}`."
+                )
+                # asyncio.get_event_loop().create_task would be wrong here; we're
+                # in a sync helper called from an async method. The caller is
+                # responsible for emitting; we just stash the hint on the action.
+                action.raw["_off_menu_hint"] = hint
+                action.verb = fallback["verb"]
+                action.target = fallback["target"]
+                action.args = fallback.get("args") or {}
+                action.raw["action"] = {
+                    "verb": action.verb, "target": action.target, "args": action.args,
+                }
+                chosen = fb_aff
+        if chosen is not None:
+            action.raw["_menu_op_id"] = chosen.op_id
+        return action, chosen
 
     async def _maybe_emit_loop_hint(self, tick: int, action: Any) -> None:
         key = (action.verb or "").upper(), (action.target or "")
