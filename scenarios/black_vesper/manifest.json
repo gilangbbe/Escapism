@@ -1,0 +1,21 @@
+{
+  "id": "black_vesper",
+  "schema_version": 1,
+  "scenario_version": "1.0.0",
+  "title": "The Last Voyage of the Black Vesper",
+  "subtitle": "Solo escape \u2014 the Brig",
+  "summary": "1721. Mira 'Ironhand' Castellanos, Quartermaster of the pirate brig Black Vesper, wakes alone in the brig. Captain Mordecai Vane has drugged the rum and locked the senior crew in the cell with her \u2014 only she is awake. The ship sails toward Port Royal, where the British will hang every pirate aboard. She has until dawn to escape, change course, and confront Vane.",
+  "tone": "Tense, conspiratorial, period-appropriate to 1721 Caribbean piracy. No magic. GM narrates in second person.",
+  "era": "1721 Caribbean",
+  "protagonist": "Mira 'Ironhand' Castellanos",
+  "expected_solution_length": 13,
+  "optimal_solution_length": 10,
+  "world_initial": "world_initial.json",
+  "game_corpus": "game.jsonl",
+  "solver_proof": "solver_proof.json",
+  "goal": {
+    "current_location": "lower_decks",
+    "objectives": {"escape_brig": "complete"}
+  },
+  "author": "hand-authored (regression fixture for the Layer-1 generator)"
+}

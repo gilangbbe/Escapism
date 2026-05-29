@@ -314,3 +314,111 @@ This is the final layer of the anti-drift stack: memory of belief
 deterministic memory of state (digest), and now corpus-grounded memory
 of rules (puzzle preconditions). The 3B-vs-7B model question becomes
 mostly a quality knob rather than a correctness one.
+
+## 2026-05-28 — Phase 7-A: freeze the Layer-1 / Layer-2 contract
+
+After two research memos
+([docs/Research-2026-05-28-simulation-redesign.md](docs/Research-2026-05-28-simulation-redesign.md),
+[docs/Research-2026-05-28-two-layer-architecture.md](docs/Research-2026-05-28-two-layer-architecture.md))
+the long-term plan is to procedurally generate entire escape-room
+scenarios with a Layer-1 LLM pipeline that emits frozen *scenario
+bundles*, which Layer 2 (this simulator) consumes. Phase A is the
+foundation: nail down the contract before any generator code is
+written.
+
+Concretely:
+
+- **JSON-Schemas (`schemas/v1/`).** Three schemas now define the
+  bundle: `manifest.schema.json` (id, schema_version, title, …),
+  `world_initial.schema.json` (the starting WorldState — inventory /
+  object_state / npc_state / objectives), and `game_doc.schema.json`
+  (every line of `game.jsonl`, with conditional rules: `hint` requires
+  `tier` and `text`; `puzzle` requires `trigger`; `recipe` requires
+  `trigger`/`preconditions`/`effects`). Draft 2020-12.
+- **Black Vesper migrated to `scenarios/black_vesper/`.** `git mv` of
+  `data/game.jsonl` and `data/world_initial.json` plus a new
+  `manifest.json` (schema_version: 1, expected_solution_length: 13).
+  This is now the regression fixture for the future generator — every
+  generator change must keep producing bundles at least as good as
+  this one.
+- **`SCENARIO` env var + `scenario_dir(...)` in `server/config.py`.**
+  Defaults to `black_vesper`. `Simulation.build()` now loads
+  `scenario_dir(settings.scenario) / "world_initial.json"` and the
+  matching `game.jsonl`. `chroma_collection` is now per-scenario
+  (`escapism_clues__<scenario_id>`) so future bundles cannot
+  cross-contaminate the index. `data/runs/` and `data/chroma/` stay at
+  the repo root — they are runtime artifacts, not scenario content.
+- **`scripts/validate_scenario.py`.** Pure-stdlib + `jsonschema` CLI.
+  `python -m scripts.validate_scenario` validates every bundle under
+  `scenarios/`; pass explicit paths to validate specific bundles.
+  Reports duplicate ids inside a single corpus.
+- **`tests/test_scenario_bundles.py`.** Pytest parametrises over every
+  directory under `scenarios/`, runs `validate_bundle`, and fails the
+  build on any error. Also asserts Black Vesper is always present.
+- **Requirements.** `jsonschema>=4.20` added to `requirements.txt`.
+
+Verification: `python -m scripts.validate_scenario` reports
+`[ ok ] scenarios/black_vesper`; suite is 108 / 108 green (was 106 —
+two new scenario-bundle tests); mock smoke still escapes the brig in
+13 ticks loading from the new path.
+
+This change is intentionally code-light. It cost zero LLM calls and
+shipped no generator code, but it makes everything downstream
+mechanical: a future Layer-1 generator must only emit bundles that
+pass the schema check, and the simulator is now content-agnostic
+behind a stable contract. Roadmap Phase 7 (A done; B/C/D/E queued)
+captures the remaining work — solver, affordance engine, generator
+roles, deployment.
+
+## 2026-05-28 — Phase 7-B: BFS solver + fully-specified Black Vesper
+
+Built the Layer-1 soundness check that any future generator pipeline
+will need: a stdlib BFS solver that proves a frozen bundle is
+actually winnable.
+
+- **`tools/solver/state_search.py`.** Pure-Python BFS over a frozen
+  `_State(current_location, frozenset inventory, frozenset discovered,
+  sorted-tuple object_state/npc_state/objectives)`. Operators are any
+  corpus doc with both `trigger` and `effects`; that includes
+  `kind: puzzle`, `kind: recipe`, and the newly minted
+  `kind: discovery`. Returns either `Plan(length, operators,
+  final_state)` (with a `to_proof(...)` serializer) or
+  `Unsolvable(reason, unmet_goal, states_explored)` carrying the
+  best-effort diagnostic state. Capped at 200k explored states.
+- **`tools/solver/__main__.py`.** `python -m tools.solver [bundles...]
+  [--write-proof]` defaults to every dir under `scenarios/`. Prints a
+  numbered plan or the unmet goal; with `--write-proof` writes
+  `solver_proof.json` next to `manifest.json`.
+- **Schema additions.** `manifest.schema.json` now requires `goal`
+  and accepts `optimal_solution_length` + `solver_proof`.
+  `game_doc.schema.json` adds the `discovery` kind (trigger + effects;
+  preconditions optional) for picking things up and revealing items
+  without a puzzle-style precondition gate.
+- **Black Vesper completed.** The original 40-doc corpus only
+  declared 4 puzzle operators — the chain from the initial brig state
+  to `current_location: lower_decks` was unreachable. Added 7 new
+  operators (1 discovery for searching the unconscious crew, 1 for
+  prying the bent nail, 3 recipes — focus the lantern, prep the
+  herbs, brew the draught — and 2 puzzles for rigging the rope and
+  waiting for the draught to take Hal under). Solver now finds an
+  optimal plan of length **10**, written to
+  `scenarios/black_vesper/solver_proof.json`.
+- **Why optimal=10 vs mock smoke=13.** The mock player issues three
+  info-only `EXAMINE` actions (cell door, ceiling hook, Hal's desk)
+  that change nothing in `WorldState`. They are valid play but not
+  strict-state operators, so the BFS skips them. Both numbers are
+  correct.
+- **Tests.** New `tests/test_solver.py` covers zero-step,
+  single-step, two-step chains, two unsolvable shapes, the
+  `max_states` cap, and three Black Vesper integration tests:
+  bundle loads with 11 operators; solve yields
+  `manifest.optimal_solution_length`; committed `solver_proof.json`
+  round-trips against a fresh solve. Suite is now 119 / 119; mock
+  smoke unchanged at 13 ticks → `poc_complete`.
+
+The point of this phase is not the BFS itself — it is the contract.
+From here on, *any* bundle the Layer-1 generator emits is rejected at
+build time unless the solver returns a `Plan`. The optimal length
+also becomes the natural difficulty knob for Phase D's
+solver-in-the-loop generator.
+

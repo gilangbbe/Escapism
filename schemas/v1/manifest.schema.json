@@ -1,0 +1,64 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://escapism.local/schemas/v1/manifest.schema.json",
+  "title": "Scenario manifest",
+  "description": "Top-level descriptor of a single scenario bundle. One per scenarios/<id>/ directory.",
+  "type": "object",
+  "required": ["id", "schema_version", "title", "scenario_version"],
+  "additionalProperties": false,
+  "properties": {
+    "id": {
+      "type": "string",
+      "pattern": "^[a-z0-9_]+$",
+      "description": "Unique scenario id; must match the directory name."
+    },
+    "schema_version": {
+      "type": "integer",
+      "const": 1,
+      "description": "Version of the scenario-bundle contract this manifest follows."
+    },
+    "scenario_version": {
+      "type": "string",
+      "description": "Human-readable version of this particular scenario (e.g. semver)."
+    },
+    "title": {"type": "string"},
+    "subtitle": {"type": "string"},
+    "summary": {"type": "string"},
+    "tone": {"type": "string"},
+    "era": {"type": "string"},
+    "protagonist": {"type": "string"},
+    "expected_solution_length": {"type": "integer", "minimum": 1},
+    "optimal_solution_length": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Length of the shortest plan the Layer-B solver should find. Written by the solver into solver_proof.json; mirrored here for tests."
+    },
+    "goal": {
+      "type": "object",
+      "description": "Solver goal predicate. All declared sub-conditions must hold for a state to be a goal state.",
+      "properties": {
+        "current_location": {"type": "string"},
+        "inventory_has": {"type": "array", "items": {"type": "string"}},
+        "object_state": {"type": "object", "additionalProperties": {"type": "string"}},
+        "npc_state": {"type": "object", "additionalProperties": {"type": "string"}},
+        "objectives": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string",
+            "enum": ["active", "locked", "complete", "failed"]
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "world_initial": {"type": "string", "default": "world_initial.json"},
+    "game_corpus": {"type": "string", "default": "game.jsonl"},
+    "solver_proof": {"type": "string", "default": "solver_proof.json"},
+    "author": {"type": "string"},
+    "generated_by": {
+      "type": "object",
+      "description": "Provenance for scenarios produced by the Layer-1 generator.",
+      "additionalProperties": true
+    }
+  }
+}

@@ -31,22 +31,29 @@ over WebSocket.
 ## Layout
 
 ```
+schemas/v1/             # frozen JSON-Schemas for the Layer-1/2 contract
+scenarios/              # one directory per scenario bundle
+  black_vesper/         # the hand-authored regression fixture
+    manifest.json       # bundle metadata; pins schema_version
+    world_initial.json  # starting snapshot
+    game.jsonl          # LLM-facing clue corpus (one JSON doc per line)
 data/
-  game.jsonl          # LLM-facing clue corpus (each line is one document)
-  world_initial.json  # starting snapshot
   runs/<ts>.events.jsonl  # append-only event log per run
   runs/<ts>.world.json    # final world snapshot per run
-  chroma/             # persistent Chroma index (auto-created)
+  chroma/               # persistent Chroma index (auto-created)
+scripts/
+  validate_scenario.py  # python -m scripts.validate_scenario [<bundle>...]
 server/
-  config.py           # env-driven settings
+  config.py           # env-driven settings (incl. SCENARIO)
   world/              # WorldState + JSONL event store
   memory/clue_store.py    # Chroma + keyword fallback
   llm/                # base, mock (deterministic), ollama
-  agents/             # protocol, player, gm
+  agents/             # protocol, player, gm, puzzle_validator, reflection, salty
   simulation.py       # turn loop, broadcast
   api.py              # FastAPI + WebSocket hub
   __main__.py         # CLI: `python -m server` | `python -m server smoke`
 client/               # Vite + React + TS + Tailwind chat UI
+docs/                 # research memos and design notes
 legacy/               # earlier 2D-grid scaffold, preserved for reference
 ```
 
@@ -62,6 +69,38 @@ USE_CHROMA=0 LLM_BACKEND=mock python -m server smoke
 
 Expected: Mira escapes the brig and reaches `lower_decks`,
 `objectives.escape_brig == "complete"`, `game_over == "poc_complete"`.
+
+## Scenarios (Layer-1 / Layer-2 contract)
+
+Every playable world lives in `scenarios/<id>/` as a **frozen bundle**
+(`manifest.json` + `world_initial.json` + `game.jsonl` +
+`solver_proof.json`). The bundles are the contract between Layer 1
+(the upcoming scenario generator) and Layer 2 (this simulator).
+Bundles must validate against the v1 JSON-Schemas in `schemas/v1/`.
+
+Validate every bundle:
+
+```bash
+python -m scripts.validate_scenario           # all bundles under scenarios/
+python -m scripts.validate_scenario scenarios/black_vesper
+```
+
+Prove a bundle is winnable (BFS planner over the corpus operators):
+
+```bash
+python -m tools.solver scenarios/black_vesper             # print optimal plan
+python -m tools.solver --write-proof scenarios/black_vesper  # freeze solver_proof.json
+```
+
+Pick a bundle for a run with the `SCENARIO` env var (default
+`black_vesper`):
+
+```bash
+SCENARIO=black_vesper LLM_BACKEND=mock python -m server smoke
+```
+
+See [docs/Research-2026-05-28-two-layer-architecture.md](docs/Research-2026-05-28-two-layer-architecture.md)
+for the full design.
 
 ## Tests
 
@@ -231,4 +270,6 @@ enforces them in code:
 - [Journal.md](Journal.md) — decision log.
 - [Roadmap.md](Roadmap.md) — phased plan.
 - [game.md](game.md) — original human-facing design brief.
-- [data/game.jsonl](data/game.jsonl) — the LLM-facing version.
+- [scenarios/black_vesper/game.jsonl](scenarios/black_vesper/game.jsonl) — the LLM-facing corpus.
+- [docs/Research-2026-05-28-simulation-redesign.md](docs/Research-2026-05-28-simulation-redesign.md) — affordance-menu plan to kill action-space hallucination.
+- [docs/Research-2026-05-28-two-layer-architecture.md](docs/Research-2026-05-28-two-layer-architecture.md) — the Generator (Layer 1) / Simulator (Layer 2) design.

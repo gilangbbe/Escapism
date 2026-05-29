@@ -1,0 +1,44 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://escapism.local/schemas/v1/world_initial.schema.json",
+  "title": "Initial world snapshot",
+  "description": "The starting WorldState the simulator boots from. Mutable fields the GM may later change MUST appear here at least with their type.",
+  "type": "object",
+  "required": [
+    "tick", "current_location", "alarm_meter", "alarm_max",
+    "inventory", "object_state", "npc_state", "objectives"
+  ],
+  "properties": {
+    "tick": {"type": "integer", "minimum": 0},
+    "in_game_time": {"type": "string", "pattern": "^[0-9]{2}:[0-9]{2}$"},
+    "minutes_until_port_royal": {"type": "integer"},
+    "current_location": {"type": "string"},
+    "alarm_meter": {"type": "integer", "minimum": 0},
+    "alarm_max": {"type": "integer", "minimum": 1},
+    "inventory": {"type": "array", "items": {"type": "string"}},
+    "known_facts": {"type": "array", "items": {"type": "string"}},
+    "discovered_items": {"type": "array", "items": {"type": "string"}},
+    "hidden_items": {"type": "array", "items": {"type": "string"}},
+    "npc_state": {
+      "type": "object",
+      "additionalProperties": {"type": "string"}
+    },
+    "object_state": {
+      "type": "object",
+      "additionalProperties": {"type": "string"}
+    },
+    "objectives": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "string",
+        "enum": ["active", "locked", "complete", "failed"]
+      }
+    },
+    "act": {"type": "integer", "minimum": 1},
+    "scene_id": {"type": "string"},
+    "history_summary": {"type": "string"},
+    "completed_actions": {"type": "array"},
+    "player_bdi": {"type": "object"}
+  },
+  "additionalProperties": true
+}

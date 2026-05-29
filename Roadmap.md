@@ -65,3 +65,49 @@ Status legend: `[x]` done · `[~]` in progress · `[ ]` not started
 - [ ] Metrics: ticks-to-escape, tokens used, failed-action rate, alarm spikes
 - [ ] Batch runner: sweep models / personas / seeds; aggregate success rates
 - [ ] Trace explorer in the UI: jump to any tick, inspect the world at that point
+
+## Phase 7 — Generator (Layer 1): procedurally generated scenarios
+
+The Simulator is Layer 2 of a two-layer architecture. Layer 1 is an LLM
+pipeline that generates entire scenarios (world, puzzles, prose) as
+*scenario bundles* the Simulator can boot from. See
+[docs/Research-2026-05-28-two-layer-architecture.md](docs/Research-2026-05-28-two-layer-architecture.md).
+
+### Phase A — Freeze the contract
+
+- [x] JSON-Schemas for manifest, world_initial, and game-doc kinds (`schemas/v1/`)
+- [x] Migrate the hand-authored Black Vesper corpus to `scenarios/black_vesper/`
+- [x] `SCENARIO` env var + `scenario_dir(...)` path indirection in the loader
+- [x] `python -m scripts.validate_scenario [<bundle>...]` CLI
+- [x] CI test (`tests/test_scenario_bundles.py`) validates every bundle under `scenarios/`
+- [x] Per-scenario Chroma collection name so bundles cannot cross-contaminate the index
+
+### Phase B — Solver (PCG soundness)
+
+- [x] `tools/solver/state_search.py`: BFS over `{inventory, object_state, npc_state, location}`
+- [x] CLI: `python -m tools.solver scenarios/<id>` → optimal plan length or `Unsolvable(reason)`
+- [x] Black Vesper solves under the solver (optimal length **10**; mock smoke takes 13 ticks because three info-only EXAMINE turns are valid play but not strict-state operators)
+- [x] Emit `solver_proof.json` into the bundle (canonical plan)
+- [x] Round-trip test: committed `solver_proof.json` matches a fresh solve
+- [x] New `discovery` operator kind in `game_doc.schema.json` (trigger + effects, no preconditions required)
+
+### Phase C — Affordance engine
+
+- [ ] `server/world/affordances.py`: enumerate legal `(verb, target, on)` tuples from world + bundle
+- [ ] Surface the menu in the Player prompt; tighten `PlayerAction` so the verb/target must come from the menu
+- [ ] Eliminate the action-space hallucination class (e.g. invented composite target ids)
+
+### Phase D — Generator pipeline (LLM)
+
+- [ ] `tools/generator/setting_writer.py` (theme + tone bible + locations)
+- [ ] `tools/generator/puzzle_designer.py` → STRIPS-like puzzle graph JSON
+- [ ] Solver-in-the-loop retries until solvable in `[diff_min, diff_max]`
+- [ ] `tools/generator/narrative_editor.py` (prose wrapper)
+- [ ] `tools/generator/critic.py` + `tools/generator/qa_player.py`
+- [ ] `tools/generator/orchestrator.py` (the full DAG, with bundle freezing)
+
+### Phase E — Deployment
+
+- [ ] `POST /api/scenarios/generate { theme, difficulty }`
+- [ ] Scenario picker in the client UI
+- [ ] `POST /api/runs/new { scenario_id }`

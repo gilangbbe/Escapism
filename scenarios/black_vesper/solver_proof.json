@@ -1,0 +1,142 @@
+{
+  "scenario_id": "black_vesper",
+  "solver": "tools.solver.state_search.bfs",
+  "schema_version": 1,
+  "goal": {
+    "current_location": "lower_decks",
+    "objectives": {
+      "escape_brig": "complete"
+    }
+  },
+  "optimal_solution_length": 10,
+  "plan": [
+    {
+      "step": 1,
+      "operator_id": "discovery.search_crew",
+      "kind": "discovery",
+      "verb": "SEARCH",
+      "target": "crew_unconscious",
+      "on": ""
+    },
+    {
+      "step": 2,
+      "operator_id": "recipe.focus_lantern",
+      "kind": "recipe",
+      "verb": "COMBINE",
+      "target": "compass_back",
+      "on": "lantern"
+    },
+    {
+      "step": 3,
+      "operator_id": "recipe.prep_herbs",
+      "kind": "recipe",
+      "verb": "COMBINE",
+      "target": "herb_packet",
+      "on": "glass_vial"
+    },
+    {
+      "step": 4,
+      "operator_id": "recipe.brew_draught",
+      "kind": "recipe",
+      "verb": "USE",
+      "target": "glass_vial",
+      "on": "lantern_focused"
+    },
+    {
+      "step": 5,
+      "operator_id": "puzzle.rig_rope",
+      "kind": "puzzle",
+      "verb": "USE",
+      "target": "rope_coil",
+      "on": "ceiling_hook"
+    },
+    {
+      "step": 6,
+      "operator_id": "puzzle.sedate_hal",
+      "kind": "puzzle",
+      "verb": "USE",
+      "target": "sleeping_draught",
+      "on": "hal_mug"
+    },
+    {
+      "step": 7,
+      "operator_id": "puzzle.wait_for_deep_sleep",
+      "kind": "puzzle",
+      "verb": "WAIT",
+      "target": "",
+      "on": ""
+    },
+    {
+      "step": 8,
+      "operator_id": "puzzle.retrieve_keys",
+      "kind": "puzzle",
+      "verb": "USE",
+      "target": "rope_grapple",
+      "on": "hal_keyring"
+    },
+    {
+      "step": 9,
+      "operator_id": "puzzle.cell_lock",
+      "kind": "puzzle",
+      "verb": "USE",
+      "target": "hal_keyring",
+      "on": "cell_door"
+    },
+    {
+      "step": 10,
+      "operator_id": "puzzle.act1_exit",
+      "kind": "puzzle",
+      "verb": "MOVE_TO",
+      "target": "",
+      "on": "lower_decks"
+    }
+  ],
+  "final_state": {
+    "current_location": "lower_decks",
+    "inventory": [
+      "compass_back",
+      "folding_knife",
+      "hal_keyring",
+      "ledger_fragment",
+      "recipe_book",
+      "rope_coil"
+    ],
+    "discovered_items": [
+      "bunk",
+      "ceiling_hook",
+      "compass_back",
+      "folding_knife",
+      "glass_vial",
+      "hal_keyring",
+      "hal_mug",
+      "herb_packet",
+      "lantern",
+      "lantern_focused",
+      "ledger_fragment",
+      "recipe_book",
+      "rope_coil",
+      "rope_rigged",
+      "sleeping_draught"
+    ],
+    "object_state": {
+      "ceiling_hook": "available",
+      "cell_door": "open",
+      "hal_mug": "tainted_drunk",
+      "herbs": "raw_unbrewed",
+      "lantern": "focused",
+      "rope_coil": "rigged",
+      "vial": "sleeping_draught"
+    },
+    "npc_state": {
+      "crew_unconscious": "drugged_unconscious",
+      "hal": "drugged_deep_sleep"
+    },
+    "objectives": {
+      "change_course": "locked",
+      "escape_brig": "complete",
+      "lower_decks": "locked",
+      "neutralise_loyalists": "locked",
+      "recover_ledger": "locked"
+    }
+  }
+}

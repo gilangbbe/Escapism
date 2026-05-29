@@ -10,12 +10,28 @@ DATA_DIR = ROOT / "data"
 RUNS_DIR = DATA_DIR / "runs"
 RUNS_DIR.mkdir(parents=True, exist_ok=True)
 CHROMA_DIR = DATA_DIR / "chroma"
+SCENARIOS_DIR = ROOT / "scenarios"
+SCHEMAS_DIR = ROOT / "schemas"
+
+
+_DEFAULT_SCENARIO = "black_vesper"
+
+
+def _scenario_id() -> str:
+    return os.getenv("SCENARIO", _DEFAULT_SCENARIO)
+
+
+def scenario_dir(scenario_id: str | None = None) -> Path:
+    """Resolve the on-disk directory for the active scenario bundle."""
+    return SCENARIOS_DIR / (scenario_id or _scenario_id())
 
 
 @dataclass
 class Settings:
     backend: str = os.getenv("LLM_BACKEND", "mock")  # mock | ollama
     ollama_host: str = os.getenv("OLLAMA_HOST", "http://localhost:11434")
+    # Active scenario bundle (directory name under scenarios/).
+    scenario: str = _scenario_id()
     # Default to qwen2.5:7b for both agents \u2014 3B-class models drift on state
     # tracking in long (~30+ tick) runs. Override per-agent via PLAYER_MODEL /
     # GM_MODEL when you want to experiment.
@@ -36,7 +52,7 @@ class Settings:
         int(os.environ["LLM_SEED"]) if os.getenv("LLM_SEED", "").strip() else None
     )
     use_chroma: bool = os.getenv("USE_CHROMA", "1") != "0"
-    chroma_collection: str = "escapism_clues"
+    chroma_collection: str = f"escapism_clues__{_scenario_id()}"
     tick_delay_seconds: float = float(os.getenv("TICK_DELAY", "0.8"))
     max_ticks: int = int(os.getenv("MAX_TICKS", "60"))
     # Phase 4 cognition knobs.

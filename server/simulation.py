@@ -16,7 +16,7 @@ from .agents.puzzle_validator import (
 )
 from .agents.reflection import Reflector
 from .agents.salty import Salty
-from .config import settings, DATA_DIR, RUNS_DIR
+from .config import settings, DATA_DIR, RUNS_DIR, scenario_dir
 from .llm import (
     LLMClient,
     MockGameMasterClient,
@@ -47,8 +47,9 @@ class Simulation:
     # --------------------------------------------------------------- factory
     @classmethod
     def build(cls, *, broadcast: Broadcaster | None = None) -> "Simulation":
-        world = WorldState.load(DATA_DIR / "world_initial.json")
-        clues = ClueStore(DATA_DIR / "game.jsonl")
+        bundle = scenario_dir(settings.scenario)
+        world = WorldState.load(bundle / "world_initial.json")
+        clues = ClueStore(bundle / "game.jsonl")
         player_llm, gm_llm = _build_llms()
         episodic = EpisodicMemory()
         player = PlayerAgent(llm=player_llm, clues=clues, episodic=episodic)
